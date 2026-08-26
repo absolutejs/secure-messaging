@@ -8,6 +8,8 @@ Report vulnerabilities privately through GitHub Security Advisories for
 credentials, or live ciphertext in reports.
 
 Applications remain responsible for verified device identity, key transparency,
-durable replay storage, delivery availability and ordering, abuse controls,
-encrypted state custody, and an explicit recovery policy. A successful send is
-not proof of recipient display, human approval, or downstream action.
+an atomic durable implementation of `SecureMessagingStore`, delivery availability
+and ordering, abuse controls, encrypted state custody, and an explicit recovery
+policy. KeyPackage claims are intentionally destructive: after a failed invite,
+the recipient should publish fresh material rather than risk reuse. A successful
+send is not proof of recipient display, human approval, or downstream action.

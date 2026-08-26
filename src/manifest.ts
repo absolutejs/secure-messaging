@@ -12,8 +12,10 @@ export const manifest = defineManifest<{
     audiences: ["app-developers", "security-teams", "agent-hosts"],
     intents: [
       "orchestrate an end-to-end encrypted conversation",
+      "invite a verified device with a mode-bound MLS Welcome",
       "send an expiring authenticated message",
       "detect replayed secure messages",
+      "retry delivery without losing advanced group state",
       "use an untrusted delivery service safely",
     ],
     keywords: [

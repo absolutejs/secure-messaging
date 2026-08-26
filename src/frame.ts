@@ -2,6 +2,7 @@ import { SecureMessagingProtocolError } from "./errors";
 import {
   SECURE_MESSAGING_FRAME_CONTRACT,
   type SecureMessagingFrame,
+  type SecureMessagingWelcomeFrame,
 } from "./types";
 
 type WireFrame = {
@@ -16,6 +17,7 @@ type WireFrame = {
   createdAt: number;
   expiresAt: number;
   id: string;
+  kind: string;
   protectedBytes: string;
   protocol: string;
 };
@@ -82,6 +84,7 @@ export const encodeSecureMessagingFrame = (
     createdAt: frame.createdAt,
     expiresAt: frame.expiresAt,
     id: frame.id,
+    kind: frame.kind,
     protectedBytes: encodeBase64url(frame.protectedBytes),
     protocol: frame.protocol,
   };
@@ -107,6 +110,7 @@ export const decodeSecureMessagingFrame = (
       "createdAt",
       "expiresAt",
       "id",
+      "kind",
       "protectedBytes",
       "protocol",
     ]) ||
@@ -135,6 +139,7 @@ export const decodeSecureMessagingFrame = (
     createdAt: value.createdAt as number,
     expiresAt: value.expiresAt as number,
     id: value.id as string,
+    kind: value.kind as SecureMessagingFrame["kind"],
     protectedBytes: decodeBase64url(value.protectedBytes),
     protocol: value.protocol as string,
   };
@@ -153,6 +158,7 @@ export const validateSecureMessagingFrame = (
   if (
     frame.contract !== SECURE_MESSAGING_FRAME_CONTRACT ||
     !idPattern.test(frame.id) ||
+    !["application", "commit", "proposal"].includes(frame.kind) ||
     !isSafeTimestamp(frame.createdAt) ||
     !isSafeTimestamp(frame.expiresAt) ||
     frame.expiresAt <= frame.createdAt ||
@@ -169,5 +175,82 @@ export const validateSecureMessagingFrame = (
   )
     throw new SecureMessagingProtocolError(
       "Secure messaging frame values are invalid.",
+    );
+};
+
+export const encodeSecureMessagingWelcomeFrame = (
+  frame: SecureMessagingWelcomeFrame,
+): Uint8Array => {
+  validateSecureMessagingWelcomeFrame(frame);
+  return encoder.encode(
+    JSON.stringify({
+      ...frame,
+      welcomeBytes: encodeBase64url(frame.welcomeBytes),
+    }),
+  );
+};
+
+export const decodeSecureMessagingWelcomeFrame = (
+  bytes: Uint8Array,
+): SecureMessagingWelcomeFrame => {
+  let value: unknown;
+  try {
+    value = JSON.parse(decoder.decode(bytes));
+  } catch {
+    throw new SecureMessagingProtocolError(
+      "Secure messaging Welcome frame is invalid JSON.",
+    );
+  }
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "contract",
+      "conversationId",
+      "createdAt",
+      "expiresAt",
+      "id",
+      "kind",
+      "recipientDeviceId",
+      "securityMode",
+      "welcomeBytes",
+    ]) ||
+    typeof value.welcomeBytes !== "string"
+  )
+    throw new SecureMessagingProtocolError(
+      "Secure messaging Welcome frame shape is invalid.",
+    );
+  const frame: SecureMessagingWelcomeFrame = {
+    contract: value.contract as 1,
+    conversationId: value.conversationId as string,
+    createdAt: value.createdAt as number,
+    expiresAt: value.expiresAt as number,
+    id: value.id as string,
+    kind: value.kind as "welcome",
+    recipientDeviceId: value.recipientDeviceId as string,
+    securityMode:
+      value.securityMode as SecureMessagingWelcomeFrame["securityMode"],
+    welcomeBytes: decodeBase64url(value.welcomeBytes),
+  };
+  validateSecureMessagingWelcomeFrame(frame);
+  return Object.freeze({ ...frame, welcomeBytes: frame.welcomeBytes.slice() });
+};
+
+export const validateSecureMessagingWelcomeFrame = (
+  frame: SecureMessagingWelcomeFrame,
+): void => {
+  if (
+    frame.contract !== SECURE_MESSAGING_FRAME_CONTRACT ||
+    frame.kind !== "welcome" ||
+    !idPattern.test(frame.id) ||
+    !isNonEmpty(frame.conversationId, 256) ||
+    !isNonEmpty(frame.recipientDeviceId, 256) ||
+    !["strict-e2ee", "managed-recovery"].includes(frame.securityMode) ||
+    !isSafeTimestamp(frame.createdAt) ||
+    !isSafeTimestamp(frame.expiresAt) ||
+    frame.expiresAt <= frame.createdAt ||
+    frame.welcomeBytes.length === 0
+  )
+    throw new SecureMessagingProtocolError(
+      "Secure messaging Welcome frame values are invalid.",
     );
 };

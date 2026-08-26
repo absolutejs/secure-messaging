@@ -3,6 +3,8 @@ import {
   defineE2EEProviderManifest,
   type DeliveryMessage,
   type DeliveryService,
+  type E2EEKeyPackage,
+  type KeyPackageDirectory,
   type LocalDeviceCredential,
   type MessagingProvider,
   type MessagingSession,
@@ -24,6 +26,7 @@ const credential: LocalDeviceCredential = {
 
 const createSurface = () => {
   let currentTime = 1_000;
+  let commitFailure = false;
   let queue: DeliveryMessage[] = [];
   let deliveryFailure = false;
   const acknowledgements: string[] = [];
@@ -31,6 +34,7 @@ const createSurface = () => {
   const conversations = new Map<string, SecureMessagingStoredConversation>();
   const pending = new Map<string, SecureMessagingOutboxEntry>();
   const sessions = new Map<string, MessagingSession>();
+  const keyPackages = new Map<string, E2EEKeyPackage>();
   const delivery: DeliveryService = {
     acknowledge: async ({ cursor }) => {
       acknowledgements.push(cursor);
@@ -41,6 +45,17 @@ const createSurface = () => {
       queue = [...queue, ...messages];
     },
   };
+  const keyPackageDirectory: KeyPackageDirectory = {
+    claim: async (identityId) => {
+      const entry = keyPackages.get(identityId);
+      keyPackages.delete(identityId);
+      return entry;
+    },
+    publish: async (keyPackage) => {
+      keyPackages.set(keyPackage.credential.identityId, keyPackage);
+    },
+    remove: async () => undefined,
+  };
   const store: SecureMessagingStore = {
     commit: async ({
       conversation,
@@ -48,6 +63,7 @@ const createSurface = () => {
       inbound,
       outbox = [],
     }) => {
+      if (commitFailure) return "state-conflict";
       const priorConversation = conversations.get(conversation.conversationId);
       if (
         (expectedRevision === undefined && priorConversation !== undefined) ||
@@ -91,6 +107,7 @@ const createSurface = () => {
     const session: MessagingSession = {
       conversationId,
       epoch: 0,
+      securityMode: "strict-e2ee",
       addMembers: async () => ({ epoch: 0, handshake: [], welcomes: [] }),
       close: async () => undefined,
       members: async () => [{ credential, index: 0 }],
@@ -151,6 +168,8 @@ const createSurface = () => {
   const client = createSecureMessagingClient({
     delivery,
     deviceCredential: credential,
+    keyPackageDirectory,
+    membershipPolicy: { authorize: () => true },
     now: () => currentTime,
     policy: {
       authorize: () => true,
@@ -168,6 +187,9 @@ const createSurface = () => {
     client,
     getQueue: () => queue,
     pending,
+    setCommitFailure: (value: boolean) => {
+      commitFailure = value;
+    },
     setDeliveryFailure: (value: boolean) => {
       deliveryFailure = value;
     },
@@ -284,5 +306,30 @@ describe("secure messaging client", () => {
       hasMore: false,
     });
     expect(surface.pending.size).toBe(0);
+  });
+
+  test("invalidates mutated in-memory state after a durable conflict", async () => {
+    const surface = createSurface();
+    await surface.client.createConversation("conversation-1");
+    surface.setCommitFailure(true);
+    await expect(
+      surface.client.send({
+        conversationId: "conversation-1",
+        id: "conflicted-message",
+        plaintext: Uint8Array.of(1),
+        purpose: "chat.message",
+        ttlMs: 500,
+      }),
+    ).rejects.toThrow("reload is required");
+    surface.setCommitFailure(false);
+    await expect(
+      surface.client.send({
+        conversationId: "conversation-1",
+        id: "unsafe-continuation",
+        plaintext: Uint8Array.of(2),
+        purpose: "chat.message",
+        ttlMs: 500,
+      }),
+    ).rejects.toThrow("not registered");
   });
 });

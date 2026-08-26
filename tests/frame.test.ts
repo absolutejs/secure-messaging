@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   decodeSecureMessagingFrame,
+  decodeSecureMessagingWelcomeFrame,
   encodeSecureMessagingFrame,
+  encodeSecureMessagingWelcomeFrame,
   SECURE_MESSAGING_FRAME_CONTRACT,
 } from "../src";
 
@@ -17,6 +19,7 @@ const frame = {
   createdAt: 1_000,
   expiresAt: 2_000,
   id: "message-1",
+  kind: "application",
   protectedBytes: Uint8Array.of(1, 2, 3),
   protocol: "MLS-1.0",
 } as const;
@@ -65,5 +68,24 @@ describe("secure messaging frame", () => {
         protectedBytes: new Uint8Array(),
       }),
     ).toThrow("values");
+  });
+
+  test("round-trips an explicitly mode-bound Welcome", () => {
+    const welcome = {
+      contract: SECURE_MESSAGING_FRAME_CONTRACT,
+      conversationId: "conversation-1",
+      createdAt: 1_000,
+      expiresAt: 2_000,
+      id: "welcome-1",
+      kind: "welcome",
+      recipientDeviceId: "bob-laptop",
+      securityMode: "strict-e2ee",
+      welcomeBytes: Uint8Array.of(4, 5, 6),
+    } as const;
+    expect(
+      decodeSecureMessagingWelcomeFrame(
+        encodeSecureMessagingWelcomeFrame(welcome),
+      ),
+    ).toEqual(welcome);
   });
 });

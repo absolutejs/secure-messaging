@@ -2,7 +2,7 @@
 
 Provider-neutral secure conversation orchestration for AbsoluteJS. It composes a
 `MessagingProvider`, untrusted `DeliveryService`, application policy, and durable
-replay store behind one API. Cryptography remains in interchangeable
+atomic state/outbox/replay store behind one API. Cryptography remains in interchangeable
 `@absolutejs/e2ee-*` providers.
 
 The confidentiality mode is mandatory and explicit. `strict-e2ee` means only
@@ -16,6 +16,11 @@ import { createSecureMessagingClient } from "@absolutejs/secure-messaging";
 const messaging = createSecureMessagingClient({
   delivery,
   deviceCredential,
+  keyPackageDirectory,
+  membershipPolicy: {
+    authorize: ({ action, target }) =>
+      action === "join" || approvedIdentities.has(target.identityId),
+  },
   policy: {
     authorize: ({ direction, senderDeviceId }) =>
       direction === "outbound" || trustedDevices.has(senderDeviceId),
@@ -26,14 +31,15 @@ const messaging = createSecureMessagingClient({
     securityMode: "strict-e2ee",
   },
   provider,
-  replayStore,
+  store,
 });
 ```
 
-Version `0.0.1` covers authenticated application-message framing and lifecycle.
-Membership invitation delivery, durable optimistic conversation-state commits,
-attachments, recovery workflows, abuse reports, and federation remain explicit
-roadmap work and are not claimed by this release.
+Version `0.1.0` covers authenticated application-message framing, KeyPackage
+publication, policy-gated invitation, mode-bound Welcome processing, membership
+commit routing, crash restoration, and retryable delivery. Attachments, member
+removal orchestration, recovery workflows, abuse reports, and federation remain
+explicit roadmap work and are not claimed by this release.
 
 ## Security boundaries
 
@@ -42,7 +48,14 @@ roadmap work and are not claimed by this release.
   unauthorized messages, and processing errors fail closed without acknowledgement.
 - Exact duplicates and already-expired frames can be acknowledged without being
   processed.
-- The replay store must implement an atomic claim and be durable across restarts.
+- The store must atomically commit sealed provider state, its compare-and-set
+  revision, an inbound replay receipt, and outbound queue entries. Splitting
+  these writes can cause message loss, replay lockout, or MLS state divergence.
+- Outbox delivery is at-least-once. A crash after transport acceptance but before
+  outbox removal can resend ciphertext; recipients handle the exact duplicate
+  through the durable receipt committed with their new sealed state.
+- A state conflict closes and removes the in-memory session. Reload durable state
+  before any further operation.
 - Push notifications should carry only an opaque wake-up token.
 
 See [SECURITY.md](./SECURITY.md) before production use.

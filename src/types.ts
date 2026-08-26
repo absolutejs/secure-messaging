@@ -1,6 +1,8 @@
 import type {
   AuthenticatedContext,
   DeliveryService,
+  DeviceCredential,
+  KeyPackageDirectory,
   LocalDeviceCredential,
   MessagingProcessResult,
   MessagingProvider,
@@ -15,8 +17,21 @@ export type SecureMessagingFrame = {
   readonly createdAt: number;
   readonly expiresAt: number;
   readonly id: string;
+  readonly kind: "application" | "commit" | "proposal";
   readonly protectedBytes: Uint8Array;
   readonly protocol: string;
+};
+
+export type SecureMessagingWelcomeFrame = {
+  readonly contract: typeof SECURE_MESSAGING_FRAME_CONTRACT;
+  readonly conversationId: string;
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly id: string;
+  readonly kind: "welcome";
+  readonly recipientDeviceId: string;
+  readonly securityMode: SecurityMode;
+  readonly welcomeBytes: Uint8Array;
 };
 
 export type SecureMessagingStoredConversation = {
@@ -87,13 +102,39 @@ export type SecureMessagingPolicy = {
   readonly securityMode: SecurityMode;
 };
 
+export type SecureMessagingMembershipAuthorization = {
+  readonly action: "invite" | "join";
+  readonly conversationId: string;
+  readonly members: readonly DeviceCredential[];
+  readonly target: DeviceCredential;
+};
+
 export type SecureMessagingClientOptions = {
   readonly delivery: DeliveryService;
   readonly deviceCredential: LocalDeviceCredential;
+  readonly idFactory?: () => string;
+  readonly keyPackageDirectory: KeyPackageDirectory;
+  readonly membershipPolicy: {
+    readonly authorize: (
+      input: SecureMessagingMembershipAuthorization,
+    ) => boolean | Promise<boolean>;
+  };
   readonly now?: () => number;
   readonly policy: SecureMessagingPolicy;
   readonly provider: MessagingProvider;
   readonly store: SecureMessagingStore;
+};
+
+export type SecureMessagingInviteInput = {
+  readonly conversationId: string;
+  readonly identityId: string;
+  readonly ttlMs: number;
+};
+
+export type SecureMessagingMembershipDeliveryResult = {
+  readonly delivery: "delivered" | "queued";
+  readonly epoch: number;
+  readonly messageIds: readonly string[];
 };
 
 export type SecureMessagingSendInput = {
@@ -109,6 +150,7 @@ export type SecureMessagingReceiveResult = {
   readonly cursor?: string;
   readonly duplicates: readonly string[];
   readonly expired: readonly string[];
+  readonly joined: readonly string[];
   readonly messages: readonly MessagingProcessResult[];
 };
 
@@ -126,8 +168,12 @@ export type SecureMessagingClient = {
   readonly closeConversation: (conversationId: string) => Promise<void>;
   readonly createConversation: (conversationId: string) => Promise<void>;
   readonly flushOutbox: (limit?: number) => Promise<SecureMessagingFlushResult>;
+  readonly invite: (
+    input: SecureMessagingInviteInput,
+  ) => Promise<SecureMessagingMembershipDeliveryResult>;
   readonly loadConversation: (conversationId: string) => Promise<void>;
   readonly receive: (cursor?: string) => Promise<SecureMessagingReceiveResult>;
+  readonly publishKeyPackage: (expiresAt: number) => Promise<string>;
   readonly registerConversation: (
     conversationId: string,
     sealedState: Uint8Array,
