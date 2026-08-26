@@ -9,7 +9,9 @@ import {
 } from "@absolutejs/e2ee";
 import {
   createSecureMessagingClient,
-  type SecureMessagingReplayStore,
+  type SecureMessagingOutboxEntry,
+  type SecureMessagingStore,
+  type SecureMessagingStoredConversation,
 } from "../src";
 
 const credential: LocalDeviceCredential = {
@@ -23,8 +25,11 @@ const credential: LocalDeviceCredential = {
 const createSurface = () => {
   let currentTime = 1_000;
   let queue: DeliveryMessage[] = [];
+  let deliveryFailure = false;
   const acknowledgements: string[] = [];
-  const claims = new Map<string, string>();
+  const receipts = new Map<string, string>();
+  const conversations = new Map<string, SecureMessagingStoredConversation>();
+  const pending = new Map<string, SecureMessagingOutboxEntry>();
   const sessions = new Map<string, MessagingSession>();
   const delivery: DeliveryService = {
     acknowledge: async ({ cursor }) => {
@@ -32,21 +37,54 @@ const createSurface = () => {
     },
     receive: async () => ({ cursor: "cursor-1", messages: queue }),
     send: async (messages) => {
+      if (deliveryFailure) throw new Error("delivery unavailable");
       queue = [...queue, ...messages];
     },
   };
-  const replayStore: SecureMessagingReplayStore = {
-    claim: async ({ conversationId, digest, messageId }) => {
+  const store: SecureMessagingStore = {
+    commit: async ({
+      conversation,
+      expectedRevision,
+      inbound,
+      outbox = [],
+    }) => {
+      const priorConversation = conversations.get(conversation.conversationId);
+      if (
+        (expectedRevision === undefined && priorConversation !== undefined) ||
+        (expectedRevision !== undefined &&
+          priorConversation?.revision !== expectedRevision)
+      )
+        return "state-conflict";
+      if (inbound !== undefined) {
+        const key = `${inbound.conversationId}:${inbound.messageId}`;
+        const prior = receipts.get(key);
+        if (prior !== undefined && prior !== inbound.digest)
+          return "replay-conflict";
+      }
+      conversations.set(conversation.conversationId, {
+        ...conversation,
+        sealedState: conversation.sealedState.slice(),
+      });
+      if (inbound !== undefined)
+        receipts.set(
+          `${inbound.conversationId}:${inbound.messageId}`,
+          inbound.digest,
+        );
+      for (const entry of outbox) pending.set(entry.queueId, entry);
+      return "committed";
+    },
+    inspectInbound: async ({ conversationId, digest, messageId }) => {
       const key = `${conversationId}:${messageId}`;
-      const prior = claims.get(key);
+      const prior = receipts.get(key);
       if (prior === digest) return "duplicate";
       if (prior !== undefined) return "conflict";
-      claims.set(key, digest);
-      return "accepted";
+      return "new";
     },
-    release: async ({ conversationId, digest, messageId }) => {
-      const key = `${conversationId}:${messageId}`;
-      if (claims.get(key) === digest) claims.delete(key);
+    listOutbox: async (limit) => [...pending.values()].slice(0, limit),
+    loadConversation: async (conversationId) =>
+      conversations.get(conversationId),
+    removeOutbox: async (queueIds) => {
+      for (const queueId of queueIds) pending.delete(queueId);
     },
   };
   const createSession = (conversationId: string): MessagingSession => {
@@ -123,12 +161,16 @@ const createSurface = () => {
       securityMode: "strict-e2ee",
     },
     provider,
-    replayStore,
+    store,
   });
   return {
     acknowledgements,
     client,
     getQueue: () => queue,
+    pending,
+    setDeliveryFailure: (value: boolean) => {
+      deliveryFailure = value;
+    },
     setNow: (value: number) => {
       currentTime = value;
     },
@@ -219,5 +261,28 @@ describe("secure messaging client", () => {
 
     await expect(surface.client.receive()).rejects.toThrow("future");
     expect(surface.acknowledgements).toEqual([]);
+  });
+
+  test("atomically queues advanced state before retryable delivery", async () => {
+    const surface = createSurface();
+    await surface.client.createConversation("conversation-1");
+    surface.setDeliveryFailure(true);
+    expect(
+      await surface.client.send({
+        conversationId: "conversation-1",
+        id: "queued-message",
+        plaintext: Uint8Array.of(1),
+        purpose: "chat.message",
+        ttlMs: 500,
+      }),
+    ).toEqual({ delivery: "queued", id: "queued-message" });
+    expect(surface.pending.size).toBe(1);
+
+    surface.setDeliveryFailure(false);
+    expect(await surface.client.flushOutbox()).toEqual({
+      delivered: ["conversation-1:queued-message"],
+      hasMore: false,
+    });
+    expect(surface.pending.size).toBe(0);
   });
 });

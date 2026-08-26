@@ -19,20 +19,50 @@ export type SecureMessagingFrame = {
   readonly protocol: string;
 };
 
-export type SecureMessagingReplayClaim = "accepted" | "conflict" | "duplicate";
+export type SecureMessagingStoredConversation = {
+  readonly conversationId: string;
+  readonly revision: number;
+  readonly sealedState: Uint8Array;
+  readonly securityMode: SecurityMode;
+};
 
-export type SecureMessagingReplayStore = {
-  readonly claim: (input: {
+export type SecureMessagingInboundReceipt = {
+  readonly conversationId: string;
+  readonly digest: string;
+  readonly expiresAt: number;
+  readonly messageId: string;
+};
+
+export type SecureMessagingOutboxEntry = {
+  readonly message: import("@absolutejs/e2ee").DeliveryMessage;
+  readonly queueId: string;
+};
+
+export type SecureMessagingInboundStatus = "conflict" | "duplicate" | "new";
+
+export type SecureMessagingStoreCommitResult =
+  "committed" | "replay-conflict" | "state-conflict";
+
+export type SecureMessagingStore = {
+  /** Atomically commits state, a replay receipt, and queued delivery entries. */
+  readonly commit: (input: {
+    readonly conversation: SecureMessagingStoredConversation;
+    readonly expectedRevision?: number;
+    readonly inbound?: SecureMessagingInboundReceipt;
+    readonly outbox?: readonly SecureMessagingOutboxEntry[];
+  }) => Promise<SecureMessagingStoreCommitResult>;
+  readonly inspectInbound: (input: {
     readonly conversationId: string;
     readonly digest: string;
-    readonly expiresAt: number;
     readonly messageId: string;
-  }) => Promise<SecureMessagingReplayClaim>;
-  readonly release: (input: {
-    readonly conversationId: string;
-    readonly digest: string;
-    readonly messageId: string;
-  }) => Promise<void>;
+  }) => Promise<SecureMessagingInboundStatus>;
+  readonly listOutbox: (
+    limit: number,
+  ) => Promise<readonly SecureMessagingOutboxEntry[]>;
+  readonly loadConversation: (
+    conversationId: string,
+  ) => Promise<SecureMessagingStoredConversation | undefined>;
+  readonly removeOutbox: (queueIds: readonly string[]) => Promise<void>;
 };
 
 export type SecureMessagingDirection = "inbound" | "outbound";
@@ -63,7 +93,7 @@ export type SecureMessagingClientOptions = {
   readonly now?: () => number;
   readonly policy: SecureMessagingPolicy;
   readonly provider: MessagingProvider;
-  readonly replayStore: SecureMessagingReplayStore;
+  readonly store: SecureMessagingStore;
 };
 
 export type SecureMessagingSendInput = {
@@ -82,14 +112,28 @@ export type SecureMessagingReceiveResult = {
   readonly messages: readonly MessagingProcessResult[];
 };
 
+export type SecureMessagingDeliveryResult = {
+  readonly delivery: "delivered" | "queued";
+  readonly id: string;
+};
+
+export type SecureMessagingFlushResult = {
+  readonly delivered: readonly string[];
+  readonly hasMore: boolean;
+};
+
 export type SecureMessagingClient = {
   readonly closeConversation: (conversationId: string) => Promise<void>;
   readonly createConversation: (conversationId: string) => Promise<void>;
+  readonly flushOutbox: (limit?: number) => Promise<SecureMessagingFlushResult>;
+  readonly loadConversation: (conversationId: string) => Promise<void>;
   readonly receive: (cursor?: string) => Promise<SecureMessagingReceiveResult>;
   readonly registerConversation: (
     conversationId: string,
     sealedState: Uint8Array,
   ) => Promise<void>;
   readonly sealConversation: (conversationId: string) => Promise<Uint8Array>;
-  readonly send: (input: SecureMessagingSendInput) => Promise<void>;
+  readonly send: (
+    input: SecureMessagingSendInput,
+  ) => Promise<SecureMessagingDeliveryResult>;
 };
