@@ -39,6 +39,7 @@ export type SecureMessagingStoredConversation = {
   readonly revision: number;
   readonly sealedState: Uint8Array;
   readonly securityMode: SecurityMode;
+  readonly status: "active" | "pending-invitation";
 };
 
 export type SecureMessagingInboundReceipt = {
@@ -77,6 +78,13 @@ export type SecureMessagingStore = {
   readonly loadConversation: (
     conversationId: string,
   ) => Promise<SecureMessagingStoredConversation | undefined>;
+  readonly recordInbound: (
+    receipt: SecureMessagingInboundReceipt,
+  ) => Promise<Exclude<SecureMessagingInboundStatus, "new"> | "recorded">;
+  readonly removeConversation: (
+    conversationId: string,
+    expectedRevision: number,
+  ) => Promise<boolean>;
   readonly removeOutbox: (queueIds: readonly string[]) => Promise<void>;
 };
 
@@ -103,11 +111,14 @@ export type SecureMessagingPolicy = {
 };
 
 export type SecureMessagingMembershipAuthorization = {
-  readonly action: "invite" | "join";
+  readonly action: "invite" | "remove" | "self-update";
   readonly conversationId: string;
   readonly members: readonly DeviceCredential[];
   readonly target: DeviceCredential;
 };
+
+export type SecureMessagingInvitationDisposition =
+  "accept" | "pending" | "reject";
 
 export type SecureMessagingClientOptions = {
   readonly delivery: DeliveryService;
@@ -118,6 +129,11 @@ export type SecureMessagingClientOptions = {
     readonly authorize: (
       input: SecureMessagingMembershipAuthorization,
     ) => boolean | Promise<boolean>;
+    readonly reviewInvitation: (
+      input: Omit<SecureMessagingMembershipAuthorization, "action">,
+    ) =>
+      | SecureMessagingInvitationDisposition
+      | Promise<SecureMessagingInvitationDisposition>;
   };
   readonly now?: () => number;
   readonly policy: SecureMessagingPolicy;
@@ -152,6 +168,14 @@ export type SecureMessagingReceiveResult = {
   readonly expired: readonly string[];
   readonly joined: readonly string[];
   readonly messages: readonly MessagingProcessResult[];
+  readonly pendingInvitations: readonly string[];
+  readonly rejected: readonly string[];
+};
+
+export type SecureMessagingRemoveInput = {
+  readonly conversationId: string;
+  readonly deviceIds: readonly string[];
+  readonly ttlMs: number;
 };
 
 export type SecureMessagingDeliveryResult = {
@@ -165,6 +189,7 @@ export type SecureMessagingFlushResult = {
 };
 
 export type SecureMessagingClient = {
+  readonly acceptInvitation: (conversationId: string) => Promise<void>;
   readonly closeConversation: (conversationId: string) => Promise<void>;
   readonly createConversation: (conversationId: string) => Promise<void>;
   readonly flushOutbox: (limit?: number) => Promise<SecureMessagingFlushResult>;
@@ -173,6 +198,10 @@ export type SecureMessagingClient = {
   ) => Promise<SecureMessagingMembershipDeliveryResult>;
   readonly loadConversation: (conversationId: string) => Promise<void>;
   readonly receive: (cursor?: string) => Promise<SecureMessagingReceiveResult>;
+  readonly rejectInvitation: (conversationId: string) => Promise<void>;
+  readonly removeMembers: (
+    input: SecureMessagingRemoveInput,
+  ) => Promise<SecureMessagingMembershipDeliveryResult>;
   readonly publishKeyPackage: (expiresAt: number) => Promise<string>;
   readonly registerConversation: (
     conversationId: string,
@@ -182,4 +211,8 @@ export type SecureMessagingClient = {
   readonly send: (
     input: SecureMessagingSendInput,
   ) => Promise<SecureMessagingDeliveryResult>;
+  readonly selfUpdate: (
+    conversationId: string,
+    ttlMs: number,
+  ) => Promise<SecureMessagingMembershipDeliveryResult>;
 };

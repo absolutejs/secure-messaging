@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+- Add explicit accept, pending, and reject dispositions for authenticated MLS
+  Welcomes; pending conversations are durably stored but cannot exchange traffic
+  or mutate membership.
+- Add durable invitation acceptance, compare-and-delete rejection, and standalone
+  replay receipts so rejected invitations remain rejected across retries.
+- Add policy-gated member removal and self-update with atomic MLS state and
+  retryable commit delivery.
+- Verify pending activation, self-update, and post-removal confidentiality with
+  the real `@absolutejs/e2ee-mls` provider.
+
 ## 0.1.0
 
 - Add one atomic persistence contract for sealed provider state, inbound replay

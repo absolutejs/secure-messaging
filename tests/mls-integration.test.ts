@@ -124,6 +124,20 @@ const createStore = () => {
     listOutbox: async (limit) => [...outbox.values()].slice(0, limit),
     loadConversation: async (conversationId) =>
       conversations.get(conversationId),
+    recordInbound: async (receipt) => {
+      const key = `${receipt.conversationId}:${receipt.messageId}`;
+      const prior = receipts.get(key);
+      if (prior === receipt.digest) return "duplicate";
+      if (prior !== undefined) return "conflict";
+      receipts.set(key, receipt.digest);
+      return "recorded";
+    },
+    removeConversation: async (conversationId, expectedRevision) => {
+      if (conversations.get(conversationId)?.revision !== expectedRevision)
+        return false;
+      conversations.delete(conversationId);
+      return true;
+    },
     removeOutbox: async (queueIds) => {
       for (const queueId of queueIds) outbox.delete(queueId);
     },
@@ -188,7 +202,10 @@ test("orchestrates a durable MLS invitation and bidirectional messaging", async 
     delivery,
     idFactory: () => `membership-${id++}`,
     keyPackageDirectory,
-    membershipPolicy: { authorize: () => true },
+    membershipPolicy: {
+      authorize: () => true,
+      reviewInvitation: () => "accept" as const,
+    },
     policy: {
       authorize: () => true,
       maximumFrameBytes: 1_000_000,
@@ -207,6 +224,10 @@ test("orchestrates a durable MLS invitation and bidirectional messaging", async 
   const bob = createSecureMessagingClient({
     ...common,
     deviceCredential: bobCredential,
+    membershipPolicy: {
+      authorize: () => true,
+      reviewInvitation: () => "pending",
+    },
     provider: bobProvider,
     store: bobStore.store,
   });
@@ -220,7 +241,28 @@ test("orchestrates a durable MLS invitation and bidirectional messaging", async 
   });
   expect(invitation.delivery).toBe("delivered");
   expect(invitation.epoch).toBe(1);
-  expect((await bob.receive()).joined).toEqual(["conversation-1"]);
+  const pending = await bob.receive();
+  expect(pending.joined).toEqual([]);
+  expect(pending.pendingInvitations).toEqual(["conversation-1"]);
+  expect(bobStore.conversations.get("conversation-1")?.status).toBe(
+    "pending-invitation",
+  );
+  await expect(
+    bob.send({
+      conversationId: "conversation-1",
+      id: "premature-message",
+      plaintext: Uint8Array.of(1),
+      purpose: "chat.message",
+      ttlMs: 30_000,
+    }),
+  ).rejects.toThrow("must be accepted");
+  await bob.acceptInvitation("conversation-1");
+  expect(bobStore.conversations.get("conversation-1")?.status).toBe("active");
+
+  const update = await alice.selfUpdate("conversation-1", 30_000);
+  expect(update.delivery).toBe("delivered");
+  expect(update.epoch).toBe(2);
+  expect((await bob.receive()).messages[0]?.kind).toBe("membership-change");
 
   await alice.send({
     conversationId: "conversation-1",
@@ -255,6 +297,23 @@ test("orchestrates a durable MLS invitation and bidirectional messaging", async 
   });
   const receivedByAlice = await alice.receive();
   expect(receivedByAlice.messages[0]?.kind).toBe("application");
-  expect(aliceStore.conversations.get("conversation-1")?.revision).toBe(4);
-  expect(bobStore.conversations.get("conversation-1")?.revision).toBe(3);
+  expect(aliceStore.conversations.get("conversation-1")?.revision).toBe(5);
+  expect(bobStore.conversations.get("conversation-1")?.revision).toBe(5);
+
+  const removal = await alice.removeMembers({
+    conversationId: "conversation-1",
+    deviceIds: ["bob-laptop"],
+    ttlMs: 30_000,
+  });
+  expect(removal.delivery).toBe("delivered");
+  expect(removal.epoch).toBe(3);
+  await alice.send({
+    conversationId: "conversation-1",
+    id: "post-removal-message",
+    plaintext: new TextEncoder().encode("Bob must not decrypt this"),
+    purpose: "chat.message",
+    recipientDeviceId: "bob-laptop",
+    ttlMs: 30_000,
+  });
+  await expect(restoredBob.receive()).rejects.toThrow();
 });

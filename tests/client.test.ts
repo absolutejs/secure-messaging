@@ -10,7 +10,10 @@ import {
   type MessagingSession,
 } from "@absolutejs/e2ee";
 import {
+  SECURE_MESSAGING_FRAME_CONTRACT,
   createSecureMessagingClient,
+  encodeSecureMessagingWelcomeFrame,
+  type SecureMessagingInvitationDisposition,
   type SecureMessagingOutboxEntry,
   type SecureMessagingStore,
   type SecureMessagingStoredConversation,
@@ -24,7 +27,9 @@ const credential: LocalDeviceCredential = {
   keyHandle: "fake-key",
 };
 
-const createSurface = () => {
+const createSurface = (
+  invitationDisposition: SecureMessagingInvitationDisposition = "accept",
+) => {
   let currentTime = 1_000;
   let commitFailure = false;
   let queue: DeliveryMessage[] = [];
@@ -99,6 +104,20 @@ const createSurface = () => {
     listOutbox: async (limit) => [...pending.values()].slice(0, limit),
     loadConversation: async (conversationId) =>
       conversations.get(conversationId),
+    recordInbound: async (receipt) => {
+      const key = `${receipt.conversationId}:${receipt.messageId}`;
+      const prior = receipts.get(key);
+      if (prior === receipt.digest) return "duplicate";
+      if (prior !== undefined) return "conflict";
+      receipts.set(key, receipt.digest);
+      return "recorded";
+    },
+    removeConversation: async (conversationId, expectedRevision) => {
+      if (conversations.get(conversationId)?.revision !== expectedRevision)
+        return false;
+      conversations.delete(conversationId);
+      return true;
+    },
     removeOutbox: async (queueIds) => {
       for (const queueId of queueIds) pending.delete(queueId);
     },
@@ -157,9 +176,8 @@ const createSurface = () => {
     createKeyPackage: async () => {
       throw new Error("not used");
     },
-    joinConversation: async () => {
-      throw new Error("not used");
-    },
+    joinConversation: async ({ welcome }) =>
+      createSession(new TextDecoder().decode(welcome)),
     restoreConversation: async ({ sealedState }) =>
       createSession(new TextDecoder().decode(sealedState)),
     sealConversationState: async (session) =>
@@ -169,7 +187,10 @@ const createSurface = () => {
     delivery,
     deviceCredential: credential,
     keyPackageDirectory,
-    membershipPolicy: { authorize: () => true },
+    membershipPolicy: {
+      authorize: () => true,
+      reviewInvitation: () => invitationDisposition,
+    },
     now: () => currentTime,
     policy: {
       authorize: () => true,
@@ -330,6 +351,83 @@ describe("secure messaging client", () => {
         purpose: "chat.message",
         ttlMs: 500,
       }),
+    ).rejects.toThrow("not registered");
+  });
+
+  test("durably rejects an unsolicited invitation without activating it", async () => {
+    const surface = createSurface("reject");
+    const bytes = encodeSecureMessagingWelcomeFrame({
+      contract: SECURE_MESSAGING_FRAME_CONTRACT,
+      conversationId: "unsolicited",
+      createdAt: 1_000,
+      expiresAt: 1_500,
+      id: "welcome-1",
+      kind: "welcome",
+      recipientDeviceId: credential.deviceId,
+      securityMode: "strict-e2ee",
+      welcomeBytes: new TextEncoder().encode("unsolicited"),
+    });
+    surface.setQueue([
+      {
+        bytes,
+        conversationId: "unsolicited",
+        id: "welcome-1",
+        kind: "welcome",
+        recipientDeviceId: credential.deviceId,
+      },
+    ]);
+
+    expect((await surface.client.receive()).rejected).toEqual(["welcome-1"]);
+    expect((await surface.client.receive()).duplicates).toEqual(["welcome-1"]);
+    await expect(
+      surface.client.send({
+        conversationId: "unsolicited",
+        id: "message-1",
+        plaintext: Uint8Array.of(1),
+        purpose: "chat.message",
+        ttlMs: 100,
+      }),
+    ).rejects.toThrow("not registered");
+  });
+
+  test("keeps a pending invitation inert and deletes it on rejection", async () => {
+    const surface = createSurface("pending");
+    const bytes = encodeSecureMessagingWelcomeFrame({
+      contract: SECURE_MESSAGING_FRAME_CONTRACT,
+      conversationId: "pending-conversation",
+      createdAt: 1_000,
+      expiresAt: 1_500,
+      id: "welcome-pending",
+      kind: "welcome",
+      recipientDeviceId: credential.deviceId,
+      securityMode: "strict-e2ee",
+      welcomeBytes: new TextEncoder().encode("pending-conversation"),
+    });
+    surface.setQueue([
+      {
+        bytes,
+        conversationId: "pending-conversation",
+        id: "welcome-pending",
+        kind: "welcome",
+        recipientDeviceId: credential.deviceId,
+      },
+    ]);
+
+    expect((await surface.client.receive()).pendingInvitations).toEqual([
+      "pending-conversation",
+    ]);
+    await expect(
+      surface.client.send({
+        conversationId: "pending-conversation",
+        id: "blocked",
+        plaintext: Uint8Array.of(1),
+        purpose: "chat.message",
+        ttlMs: 100,
+      }),
+    ).rejects.toThrow("must be accepted");
+    await surface.client.rejectInvitation("pending-conversation");
+    await expect(
+      surface.client.acceptInvitation("pending-conversation"),
     ).rejects.toThrow("not registered");
   });
 });

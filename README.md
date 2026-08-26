@@ -18,8 +18,11 @@ const messaging = createSecureMessagingClient({
   deviceCredential,
   keyPackageDirectory,
   membershipPolicy: {
-    authorize: ({ action, target }) =>
-      action === "join" || approvedIdentities.has(target.identityId),
+    authorize: ({ target }) => approvedIdentities.has(target.identityId),
+    reviewInvitation: ({ members }) =>
+      members.every(({ identityId }) => approvedIdentities.has(identityId))
+        ? "accept"
+        : "pending",
   },
   policy: {
     authorize: ({ direction, senderDeviceId }) =>
@@ -35,11 +38,14 @@ const messaging = createSecureMessagingClient({
 });
 ```
 
-Version `0.1.0` covers authenticated application-message framing, KeyPackage
-publication, policy-gated invitation, mode-bound Welcome processing, membership
-commit routing, crash restoration, and retryable delivery. Attachments, member
-removal orchestration, recovery workflows, abuse reports, and federation remain
-explicit roadmap work and are not claimed by this release.
+Version `0.2.0` adds an explicit invitation inbox and durable MLS membership
+maintenance. A cryptographically valid Welcome can be accepted immediately,
+held as an inert `pending-invitation`, or durably rejected. Pending conversations
+cannot send, invite, remove members, self-update, or process conversation traffic.
+Member removal and self-update policy checks occur before MLS mutation, and the
+resulting group state and retryable commit messages use one atomic store commit.
+Attachments, recovery workflows, abuse reports, and federation remain explicit
+roadmap work and are not claimed by this release.
 
 ## Security boundaries
 
@@ -51,6 +57,17 @@ explicit roadmap work and are not claimed by this release.
 - The store must atomically commit sealed provider state, its compare-and-set
   revision, an inbound replay receipt, and outbound queue entries. Splitting
   these writes can cause message loss, replay lockout, or MLS state divergence.
+- `recordInbound` must durably preserve a rejected Welcome receipt without
+  creating conversation state. `removeConversation` must compare-and-delete the
+  exact revision while preserving replay receipts. These properties prevent a
+  rejected invite from reappearing and prevent acceptance/rejection races.
+- Invitation review receives identities verified by the selected E2EE provider,
+  but applications should default unknown or unexpected groups to `pending` and
+  require an authenticated, phishing-resistant approval ceremony before calling
+  `acceptInvitation`.
+- Removing a device prevents it from decrypting future epochs; it cannot erase
+  plaintext or keys the device already possessed. Removed devices are not sent
+  the removal commit.
 - Outbox delivery is at-least-once. A crash after transport acceptance but before
   outbox removal can resend ciphertext; recipients handle the exact duplicate
   through the durable receipt committed with their new sealed state.

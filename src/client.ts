@@ -1,6 +1,7 @@
 import {
   requireMessagingSessionMode,
   type DeliveryMessage,
+  type MembershipChange,
   type MessagingSession,
 } from "@absolutejs/e2ee";
 import {
@@ -24,12 +25,14 @@ import {
   type SecureMessagingOutboxEntry,
   type SecureMessagingPolicyInput,
   type SecureMessagingReceiveResult,
+  type SecureMessagingRemoveInput,
   type SecureMessagingSendInput,
 } from "./types";
 
 type SessionEntry = {
   revision: number;
   readonly session: MessagingSession;
+  status: "active" | "pending-invitation";
 };
 
 const validateOptions = (options: SecureMessagingClientOptions): void => {
@@ -108,6 +111,31 @@ export const createSecureMessagingClient = (
     return entry;
   };
 
+  const requireActiveEntry = (conversationId: string): SessionEntry => {
+    const entry = requireEntry(conversationId);
+    if (entry.status !== "active")
+      throw new SecureMessagingProtocolError(
+        `Conversation ${conversationId} has a pending invitation that must be accepted first.`,
+      );
+    return entry;
+  };
+
+  const requireExpiry = (ttlMs: number, label: string) => {
+    const currentTime = now();
+    if (
+      !Number.isSafeInteger(ttlMs) ||
+      ttlMs < 1 ||
+      ttlMs > options.policy.maximumTtlMs
+    )
+      throw new SecureMessagingProtocolError(
+        `${label} lifetime violates messaging policy.`,
+      );
+    const expiresAt = currentTime + ttlMs;
+    if (!Number.isSafeInteger(expiresAt))
+      throw new SecureMessagingProtocolError(`${label} expiry is invalid.`);
+    return { currentTime, expiresAt };
+  };
+
   const discardEntry = async (
     conversationId: string,
     entry: SessionEntry,
@@ -135,6 +163,7 @@ export const createSecureMessagingClient = (
           revision,
           sealedState,
           securityMode: options.policy.securityMode,
+          status: entry.status,
         },
         ...(input.expectedRevision === undefined
           ? {}
@@ -158,6 +187,7 @@ export const createSecureMessagingClient = (
     readonly expectedRevision?: number;
     readonly inbound?: SecureMessagingInboundReceipt;
     readonly session: MessagingSession;
+    readonly status?: SessionEntry["status"];
   }): Promise<void> => {
     try {
       requireMessagingSessionMode(input.session, options.policy.securityMode);
@@ -174,6 +204,7 @@ export const createSecureMessagingClient = (
     const entry: SessionEntry = {
       revision: input.expectedRevision ?? 0,
       session: input.session,
+      status: input.status ?? "active",
     };
     sessions.set(input.conversationId, entry);
     if (input.expectedRevision === undefined)
@@ -243,12 +274,17 @@ export const createSecureMessagingClient = (
         throw new SecureMessagingProtocolError(
           "Stored conversation security mode does not match client policy.",
         );
+      if (stored.status !== "active" && stored.status !== "pending-invitation")
+        throw new SecureMessagingProtocolError(
+          "Stored conversation has an invalid invitation status.",
+        );
       await attachSession({
         conversationId,
         expectedRevision: stored.revision,
         session: await options.provider.restoreConversation({
           sealedState: stored.sealedState,
         }),
+        status: stored.status,
       });
     });
 
@@ -300,7 +336,7 @@ export const createSecureMessagingClient = (
         const expiresAt = currentTime + input.ttlMs;
         if (!Number.isSafeInteger(expiresAt))
           throw new SecureMessagingProtocolError("Outbound expiry is invalid.");
-        const entry = requireEntry(input.conversationId);
+        const entry = requireActiveEntry(input.conversationId);
         await authorize(options, {
           conversationId: input.conversationId,
           direction: "outbound",
@@ -389,21 +425,11 @@ export const createSecureMessagingClient = (
         readonly entries: readonly SecureMessagingOutboxEntry[];
         readonly epoch: number;
       }> => {
-        const currentTime = now();
-        if (
-          !Number.isSafeInteger(input.ttlMs) ||
-          input.ttlMs < 1 ||
-          input.ttlMs > options.policy.maximumTtlMs
-        )
-          throw new SecureMessagingProtocolError(
-            "Invitation lifetime violates messaging policy.",
-          );
-        const expiresAt = currentTime + input.ttlMs;
-        if (!Number.isSafeInteger(expiresAt))
-          throw new SecureMessagingProtocolError(
-            "Invitation expiry is invalid.",
-          );
-        const entry = requireEntry(input.conversationId);
+        const { currentTime, expiresAt } = requireExpiry(
+          input.ttlMs,
+          "Invitation",
+        );
+        const entry = requireActiveEntry(input.conversationId);
         const keyPackage = await options.keyPackageDirectory.claim(
           input.identityId,
         );
@@ -518,6 +544,229 @@ export const createSecureMessagingClient = (
     });
   };
 
+  const buildHandshakeEntries = (input: {
+    readonly conversationId: string;
+    readonly createdAt: number;
+    readonly expiresAt: number;
+    readonly membership: MembershipChange;
+    readonly recipientDeviceIds: readonly string[];
+  }): readonly SecureMessagingOutboxEntry[] => {
+    if (input.membership.welcomes.length !== 0)
+      throw new SecureMessagingProtocolError(
+        "Provider unexpectedly produced Welcome messages for this membership change.",
+      );
+    const entries: SecureMessagingOutboxEntry[] = [];
+    for (const handshake of input.membership.handshake) {
+      for (const recipientDeviceId of input.recipientDeviceIds) {
+        const id = idFactory();
+        const message: DeliveryMessage = {
+          bytes: encodeSecureMessagingFrame({
+            authenticatedContext: handshake.authenticatedContext,
+            contract: SECURE_MESSAGING_FRAME_CONTRACT,
+            createdAt: input.createdAt,
+            expiresAt: input.expiresAt,
+            id,
+            kind: "commit",
+            protectedBytes: handshake.bytes,
+            protocol: handshake.protocol,
+          }),
+          conversationId: input.conversationId,
+          id,
+          kind: "commit",
+          recipientDeviceId,
+        };
+        entries.push({
+          message,
+          queueId: `${input.conversationId}:${id}`,
+        });
+      }
+    }
+    if (
+      entries.some(
+        ({ message }) =>
+          message.bytes.length > options.policy.maximumFrameBytes,
+      )
+    )
+      throw new SecureMessagingProtocolError(
+        "Encoded membership frame exceeds the frame limit.",
+      );
+    return Object.freeze(entries);
+  };
+
+  const persistMembershipChange = async (input: {
+    readonly conversationId: string;
+    readonly createdAt: number;
+    readonly entry: SessionEntry;
+    readonly expiresAt: number;
+    readonly membership: MembershipChange;
+    readonly recipientDeviceIds: readonly string[];
+  }): Promise<{
+    readonly entries: readonly SecureMessagingOutboxEntry[];
+    readonly epoch: number;
+  }> => {
+    const entries = buildHandshakeEntries(input);
+    await commitEntry({
+      entry: input.entry,
+      expectedRevision: input.entry.revision,
+      ...(entries.length === 0 ? {} : { outbox: entries }),
+    });
+    return Object.freeze({ entries, epoch: input.membership.epoch });
+  };
+
+  const removeMembers = async (
+    input: SecureMessagingRemoveInput,
+  ): Promise<SecureMessagingMembershipDeliveryResult> => {
+    const built = await withConversationLock(input.conversationId, async () => {
+      const { currentTime, expiresAt } = requireExpiry(
+        input.ttlMs,
+        "Member removal",
+      );
+      const requested = new Set(input.deviceIds);
+      if (
+        requested.size === 0 ||
+        requested.size !== input.deviceIds.length ||
+        input.deviceIds.some((deviceId) => deviceId.length === 0)
+      )
+        throw new SecureMessagingProtocolError(
+          "Member removal requires unique, non-empty device identifiers.",
+        );
+      if (requested.has(options.deviceCredential.deviceId))
+        throw new SecureMessagingProtocolError(
+          "Self-removal is not supported; another authorized member must remove this device.",
+        );
+      const entry = requireActiveEntry(input.conversationId);
+      const members = await entry.session.members();
+      const byDeviceId = new Map(
+        members.map(({ credential: memberCredential }) => [
+          memberCredential.deviceId,
+          memberCredential,
+        ]),
+      );
+      const targets = input.deviceIds.map((deviceId) => {
+        const target = byDeviceId.get(deviceId);
+        if (target === undefined)
+          throw new SecureMessagingProtocolError(
+            `Device ${deviceId} is not a conversation member.`,
+          );
+        return target;
+      });
+      for (const target of targets)
+        if (
+          !(await options.membershipPolicy.authorize({
+            action: "remove",
+            conversationId: input.conversationId,
+            members: members.map(({ credential: member }) => member),
+            target,
+          }))
+        )
+          throw new SecureMessagingProtocolError(
+            `Membership policy rejected removal of ${target.deviceId}.`,
+          );
+      return persistMutation(input.conversationId, entry, async () =>
+        persistMembershipChange({
+          conversationId: input.conversationId,
+          createdAt: currentTime,
+          entry,
+          expiresAt,
+          membership: await entry.session.removeMembers(input.deviceIds),
+          recipientDeviceIds: members
+            .map(({ credential: member }) => member.deviceId)
+            .filter(
+              (deviceId) =>
+                deviceId !== options.deviceCredential.deviceId &&
+                !requested.has(deviceId),
+            ),
+        }),
+      );
+    });
+    return Object.freeze({
+      delivery: await deliverEntries(built.entries),
+      epoch: built.epoch,
+      messageIds: Object.freeze(built.entries.map(({ message }) => message.id)),
+    });
+  };
+
+  const selfUpdate = async (
+    conversationId: string,
+    ttlMs: number,
+  ): Promise<SecureMessagingMembershipDeliveryResult> => {
+    const built = await withConversationLock(conversationId, async () => {
+      const { currentTime, expiresAt } = requireExpiry(ttlMs, "Self-update");
+      const entry = requireActiveEntry(conversationId);
+      const members = await entry.session.members();
+      const local = members.find(
+        ({ credential: member }) =>
+          member.deviceId === options.deviceCredential.deviceId,
+      )?.credential;
+      if (local === undefined)
+        throw new SecureMessagingProtocolError(
+          "The local device is not a conversation member.",
+        );
+      if (
+        !(await options.membershipPolicy.authorize({
+          action: "self-update",
+          conversationId,
+          members: members.map(({ credential: member }) => member),
+          target: local,
+        }))
+      )
+        throw new SecureMessagingProtocolError(
+          "Membership policy rejected the self-update.",
+        );
+      return persistMutation(conversationId, entry, async () =>
+        persistMembershipChange({
+          conversationId,
+          createdAt: currentTime,
+          entry,
+          expiresAt,
+          membership: await entry.session.selfUpdate(),
+          recipientDeviceIds: members
+            .map(({ credential: member }) => member.deviceId)
+            .filter(
+              (deviceId) => deviceId !== options.deviceCredential.deviceId,
+            ),
+        }),
+      );
+    });
+    return Object.freeze({
+      delivery: await deliverEntries(built.entries),
+      epoch: built.epoch,
+      messageIds: Object.freeze(built.entries.map(({ message }) => message.id)),
+    });
+  };
+
+  const acceptInvitation = async (conversationId: string): Promise<void> =>
+    withConversationLock(conversationId, async () => {
+      const entry = requireEntry(conversationId);
+      if (entry.status !== "pending-invitation")
+        throw new SecureMessagingProtocolError(
+          `Conversation ${conversationId} does not have a pending invitation.`,
+        );
+      entry.status = "active";
+      await commitEntry({ entry, expectedRevision: entry.revision });
+    });
+
+  const rejectInvitation = async (conversationId: string): Promise<void> =>
+    withConversationLock(conversationId, async () => {
+      const entry = requireEntry(conversationId);
+      if (entry.status !== "pending-invitation")
+        throw new SecureMessagingProtocolError(
+          `Conversation ${conversationId} does not have a pending invitation.`,
+        );
+      if (
+        !(await options.store.removeConversation(
+          conversationId,
+          entry.revision,
+        ))
+      ) {
+        await discardEntry(conversationId, entry);
+        throw new SecureMessagingProtocolError(
+          "Pending invitation changed concurrently; reload is required.",
+        );
+      }
+      await discardEntry(conversationId, entry);
+    });
+
   const receive = async (
     cursor?: string,
   ): Promise<SecureMessagingReceiveResult> => {
@@ -534,6 +783,8 @@ export const createSecureMessagingClient = (
       const duplicates: string[] = [];
       const expired: string[] = [];
       const joined: string[] = [];
+      const pendingInvitations: string[] = [];
+      const rejected: string[] = [];
       const messages: SecureMessagingReceiveResult["messages"][number][] = [];
       for (const deliveryMessage of batch.messages) {
         if (
@@ -603,26 +854,53 @@ export const createSecureMessagingClient = (
               await session.close();
               throw error;
             }
-            const members = await session.members();
-            if (
-              !(await options.membershipPolicy.authorize({
-                action: "join",
+            let members: Awaited<ReturnType<MessagingSession["members"]>>;
+            let disposition: Awaited<
+              ReturnType<
+                SecureMessagingClientOptions["membershipPolicy"]["reviewInvitation"]
+              >
+            >;
+            try {
+              members = await session.members();
+              disposition = await options.membershipPolicy.reviewInvitation({
                 conversationId: frame.conversationId,
                 members: members.map(({ credential }) => credential),
                 target: options.deviceCredential,
-              }))
+              });
+            } catch (error) {
+              await session.close().catch(() => undefined);
+              throw error;
+            }
+            if (
+              disposition !== "accept" &&
+              disposition !== "pending" &&
+              disposition !== "reject"
             ) {
               await session.close();
               throw new SecureMessagingProtocolError(
-                `Membership policy rejected Welcome ${frame.id}.`,
+                `Membership policy returned an invalid disposition for Welcome ${frame.id}.`,
               );
+            }
+            if (disposition === "reject") {
+              await session.close();
+              const recorded = await options.store.recordInbound(inbound);
+              if (recorded === "conflict")
+                throw new SecureMessagingProtocolError(
+                  `Message identifier ${frame.id} was reused with different bytes.`,
+                );
+              if (recorded === "duplicate") duplicates.push(frame.id);
+              else rejected.push(frame.id);
+              return;
             }
             await attachSession({
               conversationId: frame.conversationId,
               inbound,
               session,
+              status:
+                disposition === "accept" ? "active" : "pending-invitation",
             });
-            joined.push(frame.conversationId);
+            if (disposition === "accept") joined.push(frame.conversationId);
+            else pendingInvitations.push(frame.conversationId);
           });
           continue;
         }
@@ -682,7 +960,7 @@ export const createSecureMessagingClient = (
             throw new SecureMessagingProtocolError(
               `Message identifier ${frame.id} was reused with different bytes.`,
             );
-          const entry = requireEntry(deliveryMessage.conversationId);
+          const entry = requireActiveEntry(deliveryMessage.conversationId);
           try {
             const result = await entry.session.process({
               authenticatedContext: frame.authenticatedContext,
@@ -721,6 +999,8 @@ export const createSecureMessagingClient = (
         expired: Object.freeze(expired),
         joined: Object.freeze(joined),
         messages: Object.freeze(messages),
+        pendingInvitations: Object.freeze(pendingInvitations),
+        rejected: Object.freeze(rejected),
       });
     } finally {
       receiving = false;
@@ -728,6 +1008,7 @@ export const createSecureMessagingClient = (
   };
 
   return Object.freeze({
+    acceptInvitation,
     closeConversation: async (conversationId) =>
       withConversationLock(conversationId, async () => {
         const entry = requireEntry(conversationId);
@@ -740,11 +1021,14 @@ export const createSecureMessagingClient = (
     loadConversation,
     publishKeyPackage,
     receive,
+    rejectInvitation,
     registerConversation,
+    removeMembers,
     sealConversation: async (conversationId) =>
       options.provider.sealConversationState(
         requireEntry(conversationId).session,
       ),
     send,
+    selfUpdate,
   });
 };

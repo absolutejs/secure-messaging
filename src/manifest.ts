@@ -13,6 +13,9 @@ export const manifest = defineManifest<{
     intents: [
       "orchestrate an end-to-end encrypted conversation",
       "invite a verified device with a mode-bound MLS Welcome",
+      "hold or reject an unsolicited encrypted-group invitation",
+      "remove a device and rotate MLS group secrets",
+      "self-update an MLS member leaf",
       "send an expiring authenticated message",
       "detect replayed secure messages",
       "retry delivery without losing advanced group state",

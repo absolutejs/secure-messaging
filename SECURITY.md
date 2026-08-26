@@ -13,3 +13,10 @@ and ordering, abuse controls, encrypted state custody, and an explicit recovery
 policy. KeyPackage claims are intentionally destructive: after a failed invite,
 the recipient should publish fresh material rather than risk reuse. A successful
 send is not proof of recipient display, human approval, or downstream action.
+
+Treat unknown invitations as pending. Display identities and devices from the
+provider-verified MLS roster through a phishing-resistant approval flow before
+activation. Rejecting an invitation must retain its replay receipt, and removing
+a pending conversation must use revision-checked deletion. Member removal only
+protects future epochs; it cannot revoke information a former member already
+decrypted or copied.
