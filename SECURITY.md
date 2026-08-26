@@ -20,3 +20,9 @@ activation. Rejecting an invitation must retain its replay receipt, and removing
 a pending conversation must use revision-checked deletion. Member removal only
 protects future epochs; it cannot revoke information a former member already
 decrypted or copied.
+
+Managed recovery follows RFC 9750 state-loss recovery by rejoining with a fresh
+credential and removing lost leaves. The configured verifier must bind its proof
+to the complete request and use a phishing-resistant approval ceremony. This
+package deliberately does not send serialized live MLS state to a recovery
+authority or restore a stale snapshot as a second live member.

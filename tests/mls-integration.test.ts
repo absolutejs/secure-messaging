@@ -4,6 +4,8 @@ import type {
   DeliveryService,
   E2EEKeyPackage,
   KeyPackageDirectory,
+  RecoveryGrant,
+  RecoveryRequest,
 } from "@absolutejs/e2ee";
 import {
   createMlsMessagingProvider,
@@ -212,7 +214,16 @@ test("orchestrates a durable MLS invitation and bidirectional messaging", async 
       maximumFutureSkewMs: 300_000,
       maximumMessageBytes: 1_024,
       maximumTtlMs: 60_000,
-      securityMode: "strict-e2ee" as const,
+      securityMode: "managed-recovery" as const,
+    },
+    recovery: {
+      authorityId: "recovery.example",
+      verify: async (input: {
+        readonly grant: RecoveryGrant;
+        readonly request: RecoveryRequest;
+      }) =>
+        input.grant.requestId === input.request.id &&
+        input.grant.bytes[0] === 42,
     },
   };
   const alice = createSecureMessagingClient({
@@ -300,13 +311,44 @@ test("orchestrates a durable MLS invitation and bidirectional messaging", async 
   expect(aliceStore.conversations.get("conversation-1")?.revision).toBe(5);
   expect(bobStore.conversations.get("conversation-1")?.revision).toBe(5);
 
-  const removal = await alice.removeMembers({
+  const replacementProvider = await createMlsMessagingProvider(providerOptions);
+  const replacementCredential =
+    await replacementProvider.createDeviceCredential({
+      deviceId: "bob-replacement",
+      identityId: "bob",
+    });
+  const replacementStore = createStore();
+  const replacement = createSecureMessagingClient({
+    ...common,
+    deviceCredential: replacementCredential,
+    provider: replacementProvider,
+    store: replacementStore.store,
+  });
+  await replacement.publishKeyPackage(Date.now() + 30_000);
+  const recoveryRequest = {
     conversationId: "conversation-1",
-    deviceIds: ["bob-laptop"],
+    expiresAt: Date.now() + 30_000,
+    id: "recovery-request-1",
+    issuedAt: Date.now(),
+    lostDeviceIds: ["bob-laptop"],
+    replacementCredential,
+    securityMode: "managed-recovery" as const,
+    subjectIdentityId: "bob",
+  };
+  const recovery = await alice.recoverMember({
+    grant: {
+      authorityId: "recovery.example",
+      bytes: Uint8Array.of(42),
+      expiresAt: recoveryRequest.expiresAt,
+      issuedAt: recoveryRequest.issuedAt,
+      requestId: recoveryRequest.id,
+    },
+    request: recoveryRequest,
     ttlMs: 30_000,
   });
-  expect(removal.delivery).toBe("delivered");
-  expect(removal.epoch).toBe(3);
+  expect(recovery.delivery).toBe("delivered");
+  expect(recovery.epoch).toBe(3);
+  expect((await replacement.receive()).joined).toEqual(["conversation-1"]);
   await alice.send({
     conversationId: "conversation-1",
     id: "post-removal-message",
@@ -316,4 +358,15 @@ test("orchestrates a durable MLS invitation and bidirectional messaging", async 
     ttlMs: 30_000,
   });
   await expect(restoredBob.receive()).rejects.toThrow();
+
+  await alice.send({
+    conversationId: "conversation-1",
+    id: "replacement-message",
+    plaintext: new TextEncoder().encode("new device only"),
+    purpose: "chat.message",
+    recipientDeviceId: "bob-replacement",
+    ttlMs: 30_000,
+  });
+  const recoveredMessage = await replacement.receive();
+  expect(recoveredMessage.messages[0]?.kind).toBe("application");
 });

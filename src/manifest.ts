@@ -16,6 +16,7 @@ export const manifest = defineManifest<{
       "hold or reject an unsolicited encrypted-group invitation",
       "remove a device and rotate MLS group secrets",
       "self-update an MLS member leaf",
+      "replace lost devices with an authority-approved recovery grant",
       "send an expiring authenticated message",
       "detect replayed secure messages",
       "retry delivery without losing advanced group state",

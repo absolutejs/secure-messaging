@@ -1,5 +1,7 @@
 import {
   requireMessagingSessionMode,
+  validateRecoveryGrant,
+  validateRecoveryRequest,
   type DeliveryMessage,
   type MembershipChange,
   type MessagingSession,
@@ -25,6 +27,7 @@ import {
   type SecureMessagingOutboxEntry,
   type SecureMessagingPolicyInput,
   type SecureMessagingReceiveResult,
+  type SecureMessagingRecoverInput,
   type SecureMessagingRemoveInput,
   type SecureMessagingSendInput,
 } from "./types";
@@ -70,6 +73,17 @@ const digest = async (bytes: Uint8Array): Promise<string> => {
   return [...value].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 };
 
+const sameCredential = (
+  left: import("@absolutejs/e2ee").DeviceCredential,
+  right: import("@absolutejs/e2ee").DeviceCredential,
+): boolean =>
+  left.deviceId === right.deviceId &&
+  left.identityId === right.identityId &&
+  left.issuedAt === right.issuedAt &&
+  left.expiresAt === right.expiresAt &&
+  left.bytes.length === right.bytes.length &&
+  left.bytes.every((value, index) => value === right.bytes[index]);
+
 const createConversationLock = () => {
   const tails = new Map<string, Promise<void>>();
   return async <Result>(
@@ -96,6 +110,13 @@ export const createSecureMessagingClient = (
   options: SecureMessagingClientOptions,
 ): SecureMessagingClient => {
   validateOptions(options);
+  if (
+    (options.policy.securityMode === "managed-recovery") !==
+    (options.recovery !== undefined)
+  )
+    throw new SecureMessagingConfigurationError(
+      "Managed recovery requires one explicit recovery verifier, and strict E2EE forbids one.",
+    );
   const sessions = new Map<string, SessionEntry>();
   const withConversationLock = createConversationLock();
   const now = options.now ?? Date.now;
@@ -767,6 +788,157 @@ export const createSecureMessagingClient = (
       await discardEntry(conversationId, entry);
     });
 
+  const recoverMember = async (
+    input: SecureMessagingRecoverInput,
+  ): Promise<SecureMessagingMembershipDeliveryResult> => {
+    const { request, grant } = input;
+    const built = await withConversationLock(
+      request.conversationId,
+      async () => {
+        const { currentTime, expiresAt } = requireExpiry(
+          input.ttlMs,
+          "Recovery",
+        );
+        validateRecoveryRequest(
+          request,
+          options.policy.maximumTtlMs,
+          currentTime,
+        );
+        validateRecoveryGrant(grant, request, currentTime);
+        if (
+          options.policy.securityMode !== "managed-recovery" ||
+          options.recovery === undefined ||
+          options.recovery.authorityId !== grant.authorityId ||
+          !(await options.recovery.verify({ grant, request }))
+        )
+          throw new SecureMessagingProtocolError(
+            "Recovery grant verification failed or the authority is not configured.",
+          );
+        const entry = requireActiveEntry(request.conversationId);
+        const members = await entry.session.members();
+        const lost = new Set(request.lostDeviceIds);
+        const lostMembers = members.filter(({ credential }) =>
+          lost.has(credential.deviceId),
+        );
+        if (
+          lostMembers.length !== lost.size ||
+          lostMembers.some(
+            ({ credential }) =>
+              credential.identityId !== request.subjectIdentityId,
+          ) ||
+          members.some(
+            ({ credential }) =>
+              credential.deviceId === request.replacementCredential.deviceId,
+          )
+        )
+          throw new SecureMessagingProtocolError(
+            "Recovery request does not exactly identify replaceable member devices.",
+          );
+        if (
+          !(await options.membershipPolicy.authorize({
+            action: "recover",
+            authorityId: grant.authorityId,
+            conversationId: request.conversationId,
+            lostDeviceIds: request.lostDeviceIds,
+            members: members.map(({ credential }) => credential),
+            requestId: request.id,
+            target: request.replacementCredential,
+          }))
+        )
+          throw new SecureMessagingProtocolError(
+            "Membership policy rejected the recovery grant.",
+          );
+        const keyPackage = await options.keyPackageDirectory.claim(
+          request.subjectIdentityId,
+        );
+        if (
+          keyPackage === undefined ||
+          keyPackage.expiresAt <= currentTime ||
+          !sameCredential(keyPackage.credential, request.replacementCredential)
+        )
+          throw new SecureMessagingProtocolError(
+            "No exact, unexpired replacement KeyPackage is available.",
+          );
+        return persistMutation(request.conversationId, entry, async () => {
+          const membership = await entry.session.replaceMembers({
+            add: [keyPackage],
+            removeDeviceIds: request.lostDeviceIds,
+          });
+          if (
+            membership.welcomes.length !== 1 ||
+            membership.welcomes[0]?.deviceId !==
+              request.replacementCredential.deviceId
+          )
+            throw new SecureMessagingProtocolError(
+              "Provider did not produce exactly one replacement Welcome.",
+            );
+          const entries: SecureMessagingOutboxEntry[] = [];
+          const welcome = membership.welcomes[0];
+          const welcomeId = idFactory();
+          const welcomeMessage: DeliveryMessage = {
+            bytes: encodeSecureMessagingWelcomeFrame({
+              contract: SECURE_MESSAGING_FRAME_CONTRACT,
+              conversationId: request.conversationId,
+              createdAt: currentTime,
+              expiresAt,
+              id: welcomeId,
+              kind: "welcome",
+              recipientDeviceId: welcome.deviceId,
+              securityMode: "managed-recovery",
+              welcomeBytes: welcome.bytes,
+            }),
+            conversationId: request.conversationId,
+            id: welcomeId,
+            kind: "welcome",
+            recipientDeviceId: welcome.deviceId,
+          };
+          entries.push({
+            message: welcomeMessage,
+            queueId: `${request.conversationId}:${welcomeId}`,
+          });
+          entries.push(
+            ...buildHandshakeEntries({
+              conversationId: request.conversationId,
+              createdAt: currentTime,
+              expiresAt,
+              membership: { ...membership, welcomes: [] },
+              recipientDeviceIds: members
+                .map(({ credential }) => credential.deviceId)
+                .filter(
+                  (deviceId) =>
+                    deviceId !== options.deviceCredential.deviceId &&
+                    !lost.has(deviceId),
+                ),
+            }),
+          );
+          if (
+            entries.some(
+              ({ message }) =>
+                message.bytes.length > options.policy.maximumFrameBytes,
+            )
+          )
+            throw new SecureMessagingProtocolError(
+              "Encoded recovery frame exceeds the frame limit.",
+            );
+          await commitEntry({
+            entry,
+            expectedRevision: entry.revision,
+            outbox: entries,
+          });
+          return Object.freeze({
+            entries: Object.freeze(entries),
+            epoch: membership.epoch,
+          });
+        });
+      },
+    );
+    return Object.freeze({
+      delivery: await deliverEntries(built.entries),
+      epoch: built.epoch,
+      messageIds: Object.freeze(built.entries.map(({ message }) => message.id)),
+    });
+  };
+
   const receive = async (
     cursor?: string,
   ): Promise<SecureMessagingReceiveResult> => {
@@ -1021,6 +1193,7 @@ export const createSecureMessagingClient = (
     loadConversation,
     publishKeyPackage,
     receive,
+    recoverMember,
     rejectInvitation,
     registerConversation,
     removeMembers,

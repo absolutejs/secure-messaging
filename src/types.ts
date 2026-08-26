@@ -6,6 +6,9 @@ import type {
   LocalDeviceCredential,
   MessagingProcessResult,
   MessagingProvider,
+  RecoveryGrant,
+  RecoveryGrantVerifier,
+  RecoveryRequest,
   SecurityMode,
 } from "@absolutejs/e2ee";
 
@@ -117,17 +120,29 @@ export type SecureMessagingMembershipAuthorization = {
   readonly target: DeviceCredential;
 };
 
+export type SecureMessagingRecoveryAuthorization = {
+  readonly action: "recover";
+  readonly authorityId: string;
+  readonly conversationId: string;
+  readonly lostDeviceIds: readonly string[];
+  readonly members: readonly DeviceCredential[];
+  readonly requestId: string;
+  readonly target: DeviceCredential;
+};
+
 export type SecureMessagingInvitationDisposition =
   "accept" | "pending" | "reject";
 
-export type SecureMessagingClientOptions = {
+export type SecureMessagingClientBaseOptions = {
   readonly delivery: DeliveryService;
   readonly deviceCredential: LocalDeviceCredential;
   readonly idFactory?: () => string;
   readonly keyPackageDirectory: KeyPackageDirectory;
   readonly membershipPolicy: {
     readonly authorize: (
-      input: SecureMessagingMembershipAuthorization,
+      input:
+        | SecureMessagingMembershipAuthorization
+        | SecureMessagingRecoveryAuthorization,
     ) => boolean | Promise<boolean>;
     readonly reviewInvitation: (
       input: Omit<SecureMessagingMembershipAuthorization, "action">,
@@ -136,10 +151,25 @@ export type SecureMessagingClientOptions = {
       | Promise<SecureMessagingInvitationDisposition>;
   };
   readonly now?: () => number;
-  readonly policy: SecureMessagingPolicy;
   readonly provider: MessagingProvider;
   readonly store: SecureMessagingStore;
 };
+
+export type SecureMessagingClientOptions = SecureMessagingClientBaseOptions &
+  (
+    | {
+        readonly policy: SecureMessagingPolicy & {
+          readonly securityMode: "managed-recovery";
+        };
+        readonly recovery: RecoveryGrantVerifier;
+      }
+    | {
+        readonly policy: SecureMessagingPolicy & {
+          readonly securityMode: "strict-e2ee";
+        };
+        readonly recovery?: never;
+      }
+  );
 
 export type SecureMessagingInviteInput = {
   readonly conversationId: string;
@@ -178,6 +208,12 @@ export type SecureMessagingRemoveInput = {
   readonly ttlMs: number;
 };
 
+export type SecureMessagingRecoverInput = {
+  readonly grant: RecoveryGrant;
+  readonly request: RecoveryRequest;
+  readonly ttlMs: number;
+};
+
 export type SecureMessagingDeliveryResult = {
   readonly delivery: "delivered" | "queued";
   readonly id: string;
@@ -198,6 +234,9 @@ export type SecureMessagingClient = {
   ) => Promise<SecureMessagingMembershipDeliveryResult>;
   readonly loadConversation: (conversationId: string) => Promise<void>;
   readonly receive: (cursor?: string) => Promise<SecureMessagingReceiveResult>;
+  readonly recoverMember: (
+    input: SecureMessagingRecoverInput,
+  ) => Promise<SecureMessagingMembershipDeliveryResult>;
   readonly rejectInvitation: (conversationId: string) => Promise<void>;
   readonly removeMembers: (
     input: SecureMessagingRemoveInput,

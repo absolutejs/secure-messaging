@@ -144,6 +144,7 @@ const createSurface = (
         protocol: "TEST-1.0",
       }),
       removeMembers: async () => ({ epoch: 0, handshake: [], welcomes: [] }),
+      replaceMembers: async () => ({ epoch: 0, handshake: [], welcomes: [] }),
       selfUpdate: async () => ({ epoch: 0, handshake: [], welcomes: [] }),
     };
     sessions.set(conversationId, session);

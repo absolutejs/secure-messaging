@@ -38,14 +38,24 @@ const messaging = createSecureMessagingClient({
 });
 ```
 
-Version `0.2.0` adds an explicit invitation inbox and durable MLS membership
+For `managed-recovery`, also provide exactly one `recovery` verifier. A recovery
+request is short-lived and binds the conversation, subject identity, replacement
+device credential, and every lost device ID. After the configured authority and
+local membership policy both approve it, `recoverMember()` adds the replacement
+KeyPackage and removes the lost leaves in one MLS commit. Strict-E2EE clients
+reject recovery-authority configuration.
+
+Version `0.3.0` includes an explicit invitation inbox, durable MLS membership
 maintenance. A cryptographically valid Welcome can be accepted immediately,
 held as an inert `pending-invitation`, or durably rejected. Pending conversations
 cannot send, invite, remove members, self-update, or process conversation traffic.
 Member removal and self-update policy checks occur before MLS mutation, and the
 resulting group state and retryable commit messages use one atomic store commit.
-Attachments, recovery workflows, abuse reports, and federation remain explicit
-roadmap work and are not claimed by this release.
+Managed state-loss recovery uses [RFC 9750's recovery-after-state-loss model](https://www.rfc-editor.org/rfc/rfc9750.html#section-6.6)
+and never
+hands serialized live group state to the recovery authority. Attachments, abuse
+reports, and federation remain explicit roadmap work and are not claimed by this
+release.
 
 ## Security boundaries
 
@@ -68,6 +78,10 @@ roadmap work and are not claimed by this release.
 - Removing a device prevents it from decrypting future epochs; it cannot erase
   plaintext or keys the device already possessed. Removed devices are not sent
   the removal commit.
+- Recovery grants authorize membership replacement; they do not decrypt history.
+  The authority verifier must authenticate the complete request, enforce its own
+  approval ceremony, reject revoked/expired grants, and maintain an audit trail.
+  Recovery cannot recover data that no surviving member or encrypted archive has.
 - Outbox delivery is at-least-once. A crash after transport acceptance but before
   outbox removal can resend ciphertext; recipients handle the exact duplicate
   through the durable receipt committed with their new sealed state.

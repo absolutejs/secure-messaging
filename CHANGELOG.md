@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+- Add managed recovery through short-lived, request-bound authority grants rather
+  than escrow or restoration of live serialized MLS state.
+- Bind recovery to the conversation, managed-recovery mode, subject identity,
+  exact replacement credential, and exact lost-device set.
+- Add the replacement KeyPackage and remove lost leaves in one MLS epoch using
+  `@absolutejs/e2ee-mls@0.5.0`, with atomic state and outbox persistence.
+- Verify with real MLS sessions that the replacement receives future messages
+  while the removed device cannot decrypt the new epoch.
+
 ## 0.2.0
 
 - Add explicit accept, pending, and reject dispositions for authenticated MLS
