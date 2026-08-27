@@ -99,6 +99,10 @@ export type SecureMessagingPolicyInput = {
   readonly expiresAt: number;
   readonly messageBytes: number;
   readonly messageId: string;
+  /** Authenticated application purpose bound into the MLS additional data. */
+  readonly purpose: string;
+  /** MLS epoch bound into the authenticated frame. */
+  readonly securityEpoch: number;
   readonly senderDeviceId: string;
 };
 

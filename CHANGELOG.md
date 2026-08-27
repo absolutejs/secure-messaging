@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Run inbound application policy only after the E2EE provider authenticates and
+  processes the MLS frame; rejected decisions discard mutated session state.
+- Give policy the authenticated purpose and MLS security epoch, and report
+  decrypted application size rather than unauthenticated ciphertext size.
+
 ## 0.4.1
 
 - Certify with real MLS sessions that an epoch-bound secure-transfer replacement

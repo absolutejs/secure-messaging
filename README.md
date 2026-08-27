@@ -25,8 +25,10 @@ const messaging = createSecureMessagingClient({
         : "pending",
   },
   policy: {
-    authorize: ({ direction, senderDeviceId }) =>
-      direction === "outbound" || trustedDevices.has(senderDeviceId),
+    authorize: ({ direction, purpose, securityEpoch, senderDeviceId }) =>
+      allowedPurposes.has(purpose) &&
+      securityEpoch >= minimumEpoch &&
+      (direction === "outbound" || trustedDevices.has(senderDeviceId)),
     maximumFrameBytes: 1_572_864,
     maximumFutureSkewMs: 300_000,
     maximumMessageBytes: 1_048_576,
@@ -54,8 +56,8 @@ resulting group state and retryable commit messages use one atomic store commit.
 Managed state-loss recovery uses [RFC 9750's recovery-after-state-loss model](https://www.rfc-editor.org/rfc/rfc9750.html#section-6.6)
 and never
 hands serialized live group state to the recovery authority. Attachments, abuse
-reports, and federation remain explicit roadmap work and are not claimed by this
-release.
+reports and federation live in separate packages and are not claimed by this
+core package.
 
 Version `0.4.0` adds `expectedSecurityEpoch` for sensitive application messages.
 Use the epoch returned by `removeMembers()`, `recoverMember()`, or `selfUpdate()`
@@ -68,11 +70,21 @@ The real MLS integration suite sends a strict `@absolutejs/secure-transfer`
 replacement in that epoch, verifies the replacement device can decode it, and
 verifies the removed device cannot process the same application ciphertext.
 
+Version `0.5.0` runs inbound application authorization only after the selected
+E2EE provider has authenticated and processed the frame. The policy receives the
+authenticated purpose and security epoch; for application messages,
+`messageBytes` is the decrypted plaintext size. A rejection discards the
+mutated in-memory session and requires a durable reload, so an unauthenticated
+envelope cannot trigger authorization side effects.
+
 ## Security boundaries
 
 - Delivery sees ciphertext and minimum routing metadata, never conversation keys.
 - Unknown fields, malformed frames, metadata substitution, replay-ID conflicts,
   unauthorized messages, and processing errors fail closed without acknowledgement.
+- Inbound `policy.authorize` may perform audit or approval effects because it is
+  called only after cryptographic authentication. Treat delivery metadata and
+  pre-decryption frame fields as untrusted everywhere else.
 - Exact duplicates and already-expired frames can be acknowledged without being
   processed.
 - The store must atomically commit sealed provider state, its compare-and-set

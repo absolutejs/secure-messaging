@@ -15,6 +15,7 @@ import {
   encodeSecureMessagingWelcomeFrame,
   type SecureMessagingInvitationDisposition,
   type SecureMessagingOutboxEntry,
+  type SecureMessagingPolicyInput,
   type SecureMessagingStore,
   type SecureMessagingStoredConversation,
 } from "../src";
@@ -36,6 +37,11 @@ const createSurface = (
   let deliveryFailure = false;
   const acknowledgements: string[] = [];
   const receipts = new Map<string, string>();
+  const policyAuthorizations: Array<{
+    input: SecureMessagingPolicyInput;
+    processedMessages: number;
+  }> = [];
+  let processedMessages = 0;
   const conversations = new Map<string, SecureMessagingStoredConversation>();
   const pending = new Map<string, SecureMessagingOutboxEntry>();
   const sessions = new Map<string, MessagingSession>();
@@ -130,14 +136,17 @@ const createSurface = (
       addMembers: async () => ({ epoch: 0, handshake: [], welcomes: [] }),
       close: async () => undefined,
       members: async () => [{ credential, index: 0 }],
-      process: async (message) => ({
-        kind: "application",
-        message: {
-          authenticatedContext: message.authenticatedContext,
-          plaintext: message.bytes.slice(1),
-          senderCredential: credential.bytes,
-        },
-      }),
+      process: async (message) => {
+        processedMessages += 1;
+        return {
+          kind: "application",
+          message: {
+            authenticatedContext: message.authenticatedContext,
+            plaintext: message.bytes.slice(1),
+            senderCredential: credential.bytes,
+          },
+        };
+      },
       protect: async (plaintext, authenticatedContext) => ({
         authenticatedContext,
         bytes: Uint8Array.from([42, ...plaintext]),
@@ -194,7 +203,10 @@ const createSurface = (
     },
     now: () => currentTime,
     policy: {
-      authorize: () => true,
+      authorize: (input) => {
+        policyAuthorizations.push({ input, processedMessages });
+        return true;
+      },
       maximumFrameBytes: 4_096,
       maximumFutureSkewMs: 100,
       maximumMessageBytes: 256,
@@ -209,6 +221,7 @@ const createSurface = (
     client,
     getQueue: () => queue,
     pending,
+    policyAuthorizations,
     setCommitFailure: (value: boolean) => {
       commitFailure = value;
     },
@@ -247,6 +260,25 @@ describe("secure messaging client", () => {
     const second = await surface.client.receive(first.cursor);
     expect(second.duplicates).toEqual(["message-1"]);
     expect(surface.acknowledgements).toEqual(["cursor-1", "cursor-1"]);
+    expect(surface.policyAuthorizations).toEqual([
+      {
+        input: expect.objectContaining({
+          direction: "outbound",
+          purpose: "chat.message",
+          securityEpoch: 0,
+        }),
+        processedMessages: 0,
+      },
+      {
+        input: expect.objectContaining({
+          direction: "inbound",
+          messageBytes: 5,
+          purpose: "chat.message",
+          securityEpoch: 0,
+        }),
+        processedMessages: 1,
+      },
+    ]);
   });
 
   test("fails closed when a sensitive send expects another MLS epoch", async () => {

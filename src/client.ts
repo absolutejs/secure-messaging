@@ -373,6 +373,8 @@ export const createSecureMessagingClient = (
           expiresAt,
           messageBytes: input.plaintext.length,
           messageId: input.id,
+          purpose: input.purpose,
+          securityEpoch: entry.session.epoch,
           senderDeviceId: options.deviceCredential.deviceId,
         });
         return persistMutation(input.conversationId, entry, async () => {
@@ -1121,14 +1123,6 @@ export const createSecureMessagingClient = (
           throw new SecureMessagingProtocolError(
             `Inbound message ${frame.id} was created too far in the future.`,
           );
-        await authorize(options, {
-          conversationId: deliveryMessage.conversationId,
-          direction: "inbound",
-          expiresAt: frame.expiresAt,
-          messageBytes: frame.protectedBytes.length,
-          messageId: frame.id,
-          senderDeviceId: frame.authenticatedContext.senderId,
-        });
         const frameDigest = await digest(deliveryMessage.bytes);
         await withConversationLock(deliveryMessage.conversationId, async () => {
           const inbound: SecureMessagingInboundReceipt = {
@@ -1152,6 +1146,22 @@ export const createSecureMessagingClient = (
               authenticatedContext: frame.authenticatedContext,
               bytes: frame.protectedBytes,
               protocol: frame.protocol,
+            });
+            // Inbound authorization deliberately runs only after the MLS
+            // provider has authenticated the frame and its additional data.
+            // A rejected policy decision discards the mutated session below.
+            await authorize(options, {
+              conversationId: deliveryMessage.conversationId,
+              direction: "inbound",
+              expiresAt: frame.expiresAt,
+              messageBytes:
+                result?.kind === "application"
+                  ? result.message.plaintext.length
+                  : frame.protectedBytes.length,
+              messageId: frame.id,
+              purpose: frame.authenticatedContext.purpose,
+              securityEpoch: frame.authenticatedContext.securityEpoch,
+              senderDeviceId: frame.authenticatedContext.senderId,
             });
             if (
               result?.kind === "application" &&

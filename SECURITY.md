@@ -26,6 +26,11 @@ to `expectedSecurityEpoch`. Without that precondition, a concurrent Commit can
 move the send into a newer roster than the application reviewed. The epoch guard
 does not prove recipients displayed or persisted the application message.
 
+Inbound `policy.authorize` runs after MLS authentication and receives the
+authenticated purpose, sender device ID, security epoch, and plaintext size.
+Rejected decisions discard the mutated in-memory session. Policy code may write
+an audit decision, but it must remain idempotent because delivery is at-least-once.
+
 Managed recovery follows RFC 9750 state-loss recovery by rejoining with a fresh
 credential and removing lost leaves. The configured verifier must bind its proof
 to the complete request and use a phishing-resistant approval ceremony. This
