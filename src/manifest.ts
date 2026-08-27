@@ -18,6 +18,7 @@ export const manifest = defineManifest<{
       "self-update an MLS member leaf",
       "replace lost devices with an authority-approved recovery grant",
       "send an expiring authenticated message",
+      "bind a sensitive application message to an expected MLS epoch",
       "detect replayed secure messages",
       "retry delivery without losing advanced group state",
       "use an untrusted delivery service safely",

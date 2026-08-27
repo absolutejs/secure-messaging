@@ -57,6 +57,14 @@ hands serialized live group state to the recovery authority. Attachments, abuse
 reports, and federation remain explicit roadmap work and are not claimed by this
 release.
 
+Version `0.4.0` adds `expectedSecurityEpoch` for sensitive application messages.
+Use the epoch returned by `removeMembers()`, `recoverMember()`, or `selfUpdate()`
+when sending an attachment replacement or another action that must occur in that
+exact post-commit roster. The client checks the precondition before protecting or
+persisting the message and returns the authenticated `securityEpoch` on success.
+This follows [RFC 9420's epoch model](https://www.rfc-editor.org/rfc/rfc9420.html#section-3.1):
+fresh Commit entropy is available only to members of the new epoch.
+
 ## Security boundaries
 
 - Delivery sees ciphertext and minimum routing metadata, never conversation keys.

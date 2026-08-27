@@ -228,13 +228,15 @@ describe("secure messaging client", () => {
   test("sends, authenticates, deduplicates, and acknowledges a batch", async () => {
     const surface = createSurface();
     await surface.client.createConversation("conversation-1");
-    await surface.client.send({
+    const sent = await surface.client.send({
       conversationId: "conversation-1",
+      expectedSecurityEpoch: 0,
       id: "message-1",
       plaintext: new TextEncoder().encode("hello"),
       purpose: "chat.message",
       ttlMs: 500,
     });
+    expect(sent.securityEpoch).toBe(0);
 
     const first = await surface.client.receive();
     expect(first.messages[0]?.kind).toBe("application");
@@ -245,6 +247,23 @@ describe("secure messaging client", () => {
     const second = await surface.client.receive(first.cursor);
     expect(second.duplicates).toEqual(["message-1"]);
     expect(surface.acknowledgements).toEqual(["cursor-1", "cursor-1"]);
+  });
+
+  test("fails closed when a sensitive send expects another MLS epoch", async () => {
+    const surface = createSurface();
+    await surface.client.createConversation("conversation-1");
+    await expect(
+      surface.client.send({
+        conversationId: "conversation-1",
+        expectedSecurityEpoch: 1,
+        id: "epoch-bound-message",
+        plaintext: Uint8Array.of(1),
+        purpose: "secure-transfer.replacement",
+        ttlMs: 500,
+      }),
+    ).rejects.toThrow("different security epoch");
+    expect(surface.getQueue()).toEqual([]);
+    expect(surface.pending.size).toBe(0);
   });
 
   test("drops expired frames but fails closed on identifier conflicts", async () => {
@@ -319,7 +338,11 @@ describe("secure messaging client", () => {
         purpose: "chat.message",
         ttlMs: 500,
       }),
-    ).toEqual({ delivery: "queued", id: "queued-message" });
+    ).toEqual({
+      delivery: "queued",
+      id: "queued-message",
+      securityEpoch: 0,
+    });
     expect(surface.pending.size).toBe(1);
 
     surface.setDeliveryFailure(false);

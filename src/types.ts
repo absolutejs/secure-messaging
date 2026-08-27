@@ -185,6 +185,8 @@ export type SecureMessagingMembershipDeliveryResult = {
 
 export type SecureMessagingSendInput = {
   readonly conversationId: string;
+  /** Fail instead of sending if the conversation has advanced to another epoch. */
+  readonly expectedSecurityEpoch?: number;
   readonly id: string;
   readonly plaintext: Uint8Array;
   readonly purpose: string;
@@ -217,6 +219,7 @@ export type SecureMessagingRecoverInput = {
 export type SecureMessagingDeliveryResult = {
   readonly delivery: "delivered" | "queued";
   readonly id: string;
+  readonly securityEpoch: number;
 };
 
 export type SecureMessagingFlushResult = {

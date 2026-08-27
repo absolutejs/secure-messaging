@@ -21,6 +21,11 @@ a pending conversation must use revision-checked deletion. Member removal only
 protects future epochs; it cannot revoke information a former member already
 decrypted or copied.
 
+Bind attachment replacements and similarly sensitive post-membership messages
+to `expectedSecurityEpoch`. Without that precondition, a concurrent Commit can
+move the send into a newer roster than the application reviewed. The epoch guard
+does not prove recipients displayed or persisted the application message.
+
 Managed recovery follows RFC 9750 state-loss recovery by rejoining with a fresh
 credential and removing lost leaves. The configured verifier must bind its proof
 to the complete request and use a phishing-resistant approval ceremony. This

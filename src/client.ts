@@ -358,6 +358,15 @@ export const createSecureMessagingClient = (
         if (!Number.isSafeInteger(expiresAt))
           throw new SecureMessagingProtocolError("Outbound expiry is invalid.");
         const entry = requireActiveEntry(input.conversationId);
+        if (
+          input.expectedSecurityEpoch !== undefined &&
+          (!Number.isSafeInteger(input.expectedSecurityEpoch) ||
+            input.expectedSecurityEpoch < 0 ||
+            input.expectedSecurityEpoch !== entry.session.epoch)
+        )
+          throw new SecureMessagingProtocolError(
+            "Outbound message expected a different security epoch.",
+          );
         await authorize(options, {
           conversationId: input.conversationId,
           direction: "outbound",
@@ -416,6 +425,11 @@ export const createSecureMessagingClient = (
     return Object.freeze({
       delivery: await deliverEntries([outbox]),
       id: input.id,
+      securityEpoch:
+        outbox.message.kind === "application"
+          ? decodeSecureMessagingFrame(outbox.message.bytes)
+              .authenticatedContext.securityEpoch
+          : 0,
     });
   };
 

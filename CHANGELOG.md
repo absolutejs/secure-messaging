@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Add an optional expected-security-epoch precondition for sensitive application
+  messages and reject before MLS mutation when the conversation has advanced.
+- Return the authenticated MLS security epoch from successful sends so callers
+  can bind related application state to the exact epoch.
+
 ## 0.3.0
 
 - Add managed recovery through short-lived, request-bound authority grants rather
