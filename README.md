@@ -64,6 +64,9 @@ exact post-commit roster. The client checks the precondition before protecting o
 persisting the message and returns the authenticated `securityEpoch` on success.
 This follows [RFC 9420's epoch model](https://www.rfc-editor.org/rfc/rfc9420.html#section-3.1):
 fresh Commit entropy is available only to members of the new epoch.
+The real MLS integration suite sends a strict `@absolutejs/secure-transfer`
+replacement in that epoch, verifies the replacement device can decode it, and
+verifies the removed device cannot process the same application ciphertext.
 
 ## Security boundaries
 

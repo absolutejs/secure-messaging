@@ -11,6 +11,16 @@ import {
   createMlsMessagingProvider,
   type MlsStateProtection,
 } from "@absolutejs/e2ee-mls";
+import {
+  SECURE_TRANSFER_CONTRACT,
+  SECURE_TRANSFER_REPLACEMENT_CONTRACT,
+  SECURE_TRANSFER_REVOCATION_CONTRACT,
+  decodeSecureTransferReplacement,
+  encodeSecureTransferReplacement,
+  hashSecureTransferDescriptor,
+  type SecureTransferDescriptor,
+  type SecureTransferReplacement,
+} from "@absolutejs/secure-transfer";
 import { expect, test } from "bun:test";
 import {
   createSecureMessagingClient,
@@ -349,24 +359,78 @@ test("orchestrates a durable MLS invitation and bidirectional messaging", async 
   expect(recovery.delivery).toBe("delivered");
   expect(recovery.epoch).toBe(3);
   expect((await replacement.receive()).joined).toEqual(["conversation-1"]);
-  await alice.send({
+  const oldDescriptor: SecureTransferDescriptor = {
+    attachmentId: "attachment-1",
+    capability: {
+      bytes: Uint8Array.of(1),
+      protocol: "TEST-1",
+      providerId: "test.crypto",
+    },
+    contract: SECURE_TRANSFER_CONTRACT,
     conversationId: "conversation-1",
+    createdAt: Date.now() - 1_000,
+    expiresAt: Date.now() + 30_000,
+    plaintextBytes: 1,
+    recordCount: 1,
+    recordPlaintextBytes: 1,
+    senderDeviceId: "alice-phone",
+    storeId: "test.store",
+    transferId: "old-transfer",
+  };
+  const replacementDescriptor: SecureTransferDescriptor = {
+    ...oldDescriptor,
+    capability: { ...oldDescriptor.capability, bytes: Uint8Array.of(2) },
+    createdAt: Date.now(),
+    transferId: "new-transfer",
+  };
+  const replacementPayload: SecureTransferReplacement = {
+    contract: SECURE_TRANSFER_REPLACEMENT_CONTRACT,
+    reason: "device-recovery",
+    replacementDescriptor,
+    securityEpoch: recovery.epoch,
+    supersession: {
+      contract: SECURE_TRANSFER_REVOCATION_CONTRACT,
+      descriptorHash: await hashSecureTransferDescriptor(oldDescriptor),
+      reason: "superseded",
+      revokedAt: replacementDescriptor.createdAt,
+      revokerDeviceId: "alice-phone",
+      transferId: oldDescriptor.transferId,
+    },
+  };
+  const replacementBytes = encodeSecureTransferReplacement(replacementPayload);
+  const removedDelivery = await alice.send({
+    conversationId: "conversation-1",
+    expectedSecurityEpoch: recovery.epoch,
     id: "post-removal-message",
-    plaintext: new TextEncoder().encode("Bob must not decrypt this"),
-    purpose: "chat.message",
+    plaintext: replacementBytes,
+    purpose: "secure-transfer.replacement",
     recipientDeviceId: "bob-laptop",
     ttlMs: 30_000,
   });
+  expect(removedDelivery.securityEpoch).toBe(recovery.epoch);
   await expect(restoredBob.receive()).rejects.toThrow();
 
   await alice.send({
     conversationId: "conversation-1",
+    expectedSecurityEpoch: recovery.epoch,
     id: "replacement-message",
-    plaintext: new TextEncoder().encode("new device only"),
-    purpose: "chat.message",
+    plaintext: replacementBytes,
+    purpose: "secure-transfer.replacement",
     recipientDeviceId: "bob-replacement",
     ttlMs: 30_000,
   });
   const recoveredMessage = await replacement.receive();
   expect(recoveredMessage.messages[0]?.kind).toBe("application");
+  if (recoveredMessage.messages[0]?.kind === "application") {
+    expect(
+      recoveredMessage.messages[0].message.authenticatedContext.securityEpoch,
+    ).toBe(recovery.epoch);
+    expect(
+      decodeSecureTransferReplacement(
+        recoveredMessage.messages[0].message.plaintext,
+        4_096,
+        2_048,
+      ),
+    ).toEqual(replacementPayload);
+  }
 });

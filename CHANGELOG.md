@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Certify with real MLS sessions that an epoch-bound secure-transfer replacement
+  reaches the replacement device while the removed device cannot decrypt it.
+
 ## 0.4.0
 
 - Add an optional expected-security-epoch precondition for sensitive application
