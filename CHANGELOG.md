@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+- Add `receiveAndHandle()` so authenticated application work runs before its
+  delivery cursor is acknowledged.
+- Atomically persist handler-generated encrypted replies with the inbound replay
+  receipt and advanced conversation state, leaving failed delivery in the
+  durable outbox.
+- Wipe handler-owned inbound and reply plaintext buffers on every completion
+  path.
+
 ## 0.5.0
 
 - Run inbound application policy only after the E2EE provider authenticates and

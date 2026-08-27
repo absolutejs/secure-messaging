@@ -77,6 +77,16 @@ authenticated purpose and security epoch; for application messages,
 mutated in-memory session and requires a durable reload, so an unauthenticated
 envelope cannot trigger authorization side effects.
 
+Version `0.5.1` adds `receiveAndHandle()` for request/receipt protocols. Its
+handler runs after MLS authentication and application policy, but before the
+inbound replay receipt or transport cursor is committed. Replies returned by the
+handler are protected at the same MLS epoch and placed in the durable outbox in
+the same store commit as the inbound receipt and advanced provider state. The
+method wipes inbound and reply plaintext and returns message IDs rather than
+plaintext. Use the authenticated request ID as the downstream idempotency key:
+an application side effect can be retried if the process exits before the atomic
+commit.
+
 ## Security boundaries
 
 - Delivery sees ciphertext and minimum routing metadata, never conversation keys.
@@ -85,6 +95,9 @@ envelope cannot trigger authorization side effects.
 - Inbound `policy.authorize` may perform audit or approval effects because it is
   called only after cryptographic authentication. Treat delivery metadata and
   pre-decryption frame fields as untrusted everywhere else.
+- `receiveAndHandle()` transfers ownership of its handler's reply buffers to the
+  client and wipes them. Handler side effects must be idempotent because a crash
+  after the effect but before the store commit causes safe redelivery.
 - Exact duplicates and already-expired frames can be acknowledged without being
   processed.
 - The store must atomically commit sealed provider state, its compare-and-set

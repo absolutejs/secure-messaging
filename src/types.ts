@@ -1,6 +1,7 @@
 import type {
   AuthenticatedContext,
   DeliveryService,
+  DecryptedMessage,
   DeviceCredential,
   KeyPackageDirectory,
   LocalDeviceCredential,
@@ -208,6 +209,29 @@ export type SecureMessagingReceiveResult = {
   readonly rejected: readonly string[];
 };
 
+export type SecureMessagingApplicationMessage = {
+  readonly id: string;
+  readonly message: DecryptedMessage;
+};
+
+export type SecureMessagingApplicationReply = Omit<
+  SecureMessagingSendInput,
+  "conversationId" | "expectedSecurityEpoch"
+>;
+
+export type SecureMessagingApplicationHandler = (
+  input: SecureMessagingApplicationMessage,
+) =>
+  | Promise<readonly SecureMessagingApplicationReply[]>
+  | readonly SecureMessagingApplicationReply[];
+
+export type SecureMessagingHandledReceiveResult = Omit<
+  SecureMessagingReceiveResult,
+  "messages"
+> & {
+  readonly handled: readonly string[];
+};
+
 export type SecureMessagingRemoveInput = {
   readonly conversationId: string;
   readonly deviceIds: readonly string[];
@@ -241,6 +265,16 @@ export type SecureMessagingClient = {
   ) => Promise<SecureMessagingMembershipDeliveryResult>;
   readonly loadConversation: (conversationId: string) => Promise<void>;
   readonly receive: (cursor?: string) => Promise<SecureMessagingReceiveResult>;
+  /**
+   * Runs application handling before the inbound receipt is committed and
+   * atomically queues returned replies with the advanced conversation state.
+   * Ownership of inbound and reply plaintext transfers to this method and the
+   * buffers are wiped before it returns.
+   */
+  readonly receiveAndHandle: (
+    handler: SecureMessagingApplicationHandler,
+    cursor?: string,
+  ) => Promise<SecureMessagingHandledReceiveResult>;
   readonly recoverMember: (
     input: SecureMessagingRecoverInput,
   ) => Promise<SecureMessagingMembershipDeliveryResult>;

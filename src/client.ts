@@ -20,7 +20,10 @@ import {
   SECURE_MESSAGING_FRAME_CONTRACT,
   type SecureMessagingClient,
   type SecureMessagingClientOptions,
+  type SecureMessagingApplicationHandler,
+  type SecureMessagingApplicationReply,
   type SecureMessagingFlushResult,
+  type SecureMessagingHandledReceiveResult,
   type SecureMessagingInboundReceipt,
   type SecureMessagingInviteInput,
   type SecureMessagingMembershipDeliveryResult,
@@ -31,6 +34,8 @@ import {
   type SecureMessagingRemoveInput,
   type SecureMessagingSendInput,
 } from "./types";
+
+const MAXIMUM_HANDLER_REPLIES = 16;
 
 type SessionEntry = {
   revision: number;
@@ -343,85 +348,14 @@ export const createSecureMessagingClient = (
     const outbox = await withConversationLock(
       input.conversationId,
       async (): Promise<SecureMessagingOutboxEntry> => {
-        const currentTime = now();
-        if (
-          input.plaintext.length === 0 ||
-          input.plaintext.length > options.policy.maximumMessageBytes ||
-          !Number.isSafeInteger(input.ttlMs) ||
-          input.ttlMs < 1 ||
-          input.ttlMs > options.policy.maximumTtlMs
-        )
-          throw new SecureMessagingProtocolError(
-            "Outbound message size or lifetime violates policy.",
-          );
-        const expiresAt = currentTime + input.ttlMs;
-        if (!Number.isSafeInteger(expiresAt))
-          throw new SecureMessagingProtocolError("Outbound expiry is invalid.");
         const entry = requireActiveEntry(input.conversationId);
-        if (
-          input.expectedSecurityEpoch !== undefined &&
-          (!Number.isSafeInteger(input.expectedSecurityEpoch) ||
-            input.expectedSecurityEpoch < 0 ||
-            input.expectedSecurityEpoch !== entry.session.epoch)
-        )
-          throw new SecureMessagingProtocolError(
-            "Outbound message expected a different security epoch.",
-          );
-        await authorize(options, {
-          conversationId: input.conversationId,
-          direction: "outbound",
-          expiresAt,
-          messageBytes: input.plaintext.length,
-          messageId: input.id,
-          purpose: input.purpose,
-          securityEpoch: entry.session.epoch,
-          senderDeviceId: options.deviceCredential.deviceId,
+        const queued = await buildApplicationOutbox(entry, input);
+        await commitEntry({
+          entry,
+          expectedRevision: entry.revision,
+          outbox: [queued],
         });
-        return persistMutation(input.conversationId, entry, async () => {
-          const protectedMessage = await entry.session.protect(
-            input.plaintext,
-            {
-              conversationId: input.conversationId,
-              expiresAt,
-              purpose: input.purpose,
-              securityEpoch: entry.session.epoch,
-              senderId: options.deviceCredential.deviceId,
-            },
-          );
-          const bytes = encodeSecureMessagingFrame({
-            authenticatedContext: protectedMessage.authenticatedContext,
-            contract: SECURE_MESSAGING_FRAME_CONTRACT,
-            createdAt: currentTime,
-            expiresAt,
-            id: input.id,
-            kind: "application",
-            protectedBytes: protectedMessage.bytes,
-            protocol: protectedMessage.protocol,
-          });
-          if (bytes.length > options.policy.maximumFrameBytes)
-            throw new SecureMessagingProtocolError(
-              "Encoded outbound message exceeds the frame limit.",
-            );
-          const message: DeliveryMessage = {
-            bytes,
-            conversationId: input.conversationId,
-            id: input.id,
-            kind: "application",
-            ...(input.recipientDeviceId === undefined
-              ? {}
-              : { recipientDeviceId: input.recipientDeviceId }),
-          };
-          const queued = Object.freeze({
-            message,
-            queueId: `${input.conversationId}:${input.id}`,
-          });
-          await commitEntry({
-            entry,
-            expectedRevision: entry.revision,
-            outbox: [queued],
-          });
-          return queued;
-        });
+        return queued;
       },
     );
     return Object.freeze({
@@ -432,6 +366,82 @@ export const createSecureMessagingClient = (
           ? decodeSecureMessagingFrame(outbox.message.bytes)
               .authenticatedContext.securityEpoch
           : 0,
+    });
+  };
+
+  const buildApplicationOutbox = async (
+    entry: SessionEntry,
+    input: SecureMessagingSendInput,
+  ): Promise<SecureMessagingOutboxEntry> => {
+    const currentTime = now();
+    if (
+      input.plaintext.length === 0 ||
+      input.plaintext.length > options.policy.maximumMessageBytes ||
+      !Number.isSafeInteger(input.ttlMs) ||
+      input.ttlMs < 1 ||
+      input.ttlMs > options.policy.maximumTtlMs
+    )
+      throw new SecureMessagingProtocolError(
+        "Outbound message size or lifetime violates policy.",
+      );
+    const expiresAt = currentTime + input.ttlMs;
+    if (!Number.isSafeInteger(expiresAt))
+      throw new SecureMessagingProtocolError("Outbound expiry is invalid.");
+    if (
+      input.expectedSecurityEpoch !== undefined &&
+      (!Number.isSafeInteger(input.expectedSecurityEpoch) ||
+        input.expectedSecurityEpoch < 0 ||
+        input.expectedSecurityEpoch !== entry.session.epoch)
+    )
+      throw new SecureMessagingProtocolError(
+        "Outbound message expected a different security epoch.",
+      );
+    await authorize(options, {
+      conversationId: input.conversationId,
+      direction: "outbound",
+      expiresAt,
+      messageBytes: input.plaintext.length,
+      messageId: input.id,
+      purpose: input.purpose,
+      securityEpoch: entry.session.epoch,
+      senderDeviceId: options.deviceCredential.deviceId,
+    });
+    return persistMutation(input.conversationId, entry, async () => {
+      const protectedMessage = await entry.session.protect(input.plaintext, {
+        conversationId: input.conversationId,
+        expiresAt,
+        purpose: input.purpose,
+        securityEpoch: entry.session.epoch,
+        senderId: options.deviceCredential.deviceId,
+      });
+      const bytes = encodeSecureMessagingFrame({
+        authenticatedContext: protectedMessage.authenticatedContext,
+        contract: SECURE_MESSAGING_FRAME_CONTRACT,
+        createdAt: currentTime,
+        expiresAt,
+        id: input.id,
+        kind: "application",
+        protectedBytes: protectedMessage.bytes,
+        protocol: protectedMessage.protocol,
+      });
+      if (bytes.length > options.policy.maximumFrameBytes)
+        throw new SecureMessagingProtocolError(
+          "Encoded outbound message exceeds the frame limit.",
+        );
+      const message: DeliveryMessage = {
+        bytes,
+        conversationId: input.conversationId,
+        id: input.id,
+        kind: "application",
+        ...(input.recipientDeviceId === undefined
+          ? {}
+          : { recipientDeviceId: input.recipientDeviceId }),
+      };
+      const queued = Object.freeze({
+        message,
+        queueId: `${input.conversationId}:${input.id}`,
+      });
+      return queued;
     });
   };
 
@@ -955,9 +965,12 @@ export const createSecureMessagingClient = (
     });
   };
 
-  const receive = async (
+  const receiveInternal = async (
     cursor?: string,
-  ): Promise<SecureMessagingReceiveResult> => {
+    handler?: SecureMessagingApplicationHandler,
+  ): Promise<
+    SecureMessagingReceiveResult | SecureMessagingHandledReceiveResult
+  > => {
     if (receiving)
       throw new SecureMessagingConfigurationError(
         "Concurrent receive calls are not supported.",
@@ -974,6 +987,8 @@ export const createSecureMessagingClient = (
       const pendingInvitations: string[] = [];
       const rejected: string[] = [];
       const messages: SecureMessagingReceiveResult["messages"][number][] = [];
+      const handled: string[] = [];
+      const replies: SecureMessagingOutboxEntry[] = [];
       for (const deliveryMessage of batch.messages) {
         if (
           deliveryMessage.bytes.length > options.policy.maximumFrameBytes ||
@@ -1171,12 +1186,51 @@ export const createSecureMessagingClient = (
               throw new SecureMessagingProtocolError(
                 `Decrypted message ${frame.id} exceeds the plaintext limit.`,
               );
+            let responseEntries: readonly SecureMessagingOutboxEntry[] = [];
+            if (result?.kind === "application" && handler !== undefined) {
+              let response: readonly SecureMessagingApplicationReply[] = [];
+              try {
+                response = await handler({
+                  id: frame.id,
+                  message: result.message,
+                });
+                if (
+                  response.length > MAXIMUM_HANDLER_REPLIES ||
+                  response.some(({ id }) => id === frame.id) ||
+                  new Set(response.map(({ id }) => id)).size !== response.length
+                )
+                  throw new SecureMessagingProtocolError(
+                    "Application handler returned an invalid reply batch.",
+                  );
+                const built: SecureMessagingOutboxEntry[] = [];
+                for (const reply of response)
+                  built.push(
+                    await buildApplicationOutbox(entry, {
+                      ...reply,
+                      conversationId: deliveryMessage.conversationId,
+                      expectedSecurityEpoch: entry.session.epoch,
+                    }),
+                  );
+                responseEntries = built;
+              } finally {
+                result.message.plaintext.fill(0);
+                for (const reply of response ?? []) reply.plaintext.fill(0);
+              }
+            }
             await commitEntry({
               entry,
               expectedRevision: entry.revision,
               inbound,
+              ...(responseEntries.length === 0
+                ? {}
+                : { outbox: responseEntries }),
             });
-            if (result !== undefined) messages.push(result);
+            if (result !== undefined) {
+              if (result.kind === "application" && handler !== undefined) {
+                handled.push(frame.id);
+                replies.push(...responseEntries);
+              } else messages.push(result);
+            }
           } catch (error) {
             if (sessions.get(deliveryMessage.conversationId) === entry)
               await discardEntry(deliveryMessage.conversationId, entry);
@@ -1184,24 +1238,39 @@ export const createSecureMessagingClient = (
           }
         });
       }
+      if (replies.length > 0) await deliverEntries(replies);
       if (batch.cursor !== undefined)
         await options.delivery.acknowledge({
           cursor: batch.cursor,
           deviceId: options.deviceCredential.deviceId,
         });
-      return Object.freeze({
+      const common = {
         ...(batch.cursor === undefined ? {} : { cursor: batch.cursor }),
         duplicates: Object.freeze(duplicates),
         expired: Object.freeze(expired),
         joined: Object.freeze(joined),
-        messages: Object.freeze(messages),
         pendingInvitations: Object.freeze(pendingInvitations),
         rejected: Object.freeze(rejected),
-      });
+      };
+      return handler === undefined
+        ? Object.freeze({ ...common, messages: Object.freeze(messages) })
+        : Object.freeze({ ...common, handled: Object.freeze(handled) });
     } finally {
       receiving = false;
     }
   };
+
+  const receive = (cursor?: string): Promise<SecureMessagingReceiveResult> =>
+    receiveInternal(cursor) as Promise<SecureMessagingReceiveResult>;
+
+  const receiveAndHandle = (
+    handler: SecureMessagingApplicationHandler,
+    cursor?: string,
+  ): Promise<SecureMessagingHandledReceiveResult> =>
+    receiveInternal(
+      cursor,
+      handler,
+    ) as Promise<SecureMessagingHandledReceiveResult>;
 
   return Object.freeze({
     acceptInvitation,
@@ -1217,6 +1286,7 @@ export const createSecureMessagingClient = (
     loadConversation,
     publishKeyPackage,
     receive,
+    receiveAndHandle,
     recoverMember,
     rejectInvitation,
     registerConversation,

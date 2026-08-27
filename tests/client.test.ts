@@ -281,6 +281,74 @@ describe("secure messaging client", () => {
     ]);
   });
 
+  test("handles an application and atomically queues its reply before acknowledgement", async () => {
+    const surface = createSurface();
+    await surface.client.createConversation("conversation-1");
+    await surface.client.send({
+      conversationId: "conversation-1",
+      id: "request-1",
+      plaintext: new TextEncoder().encode("request"),
+      purpose: "agent-exchange.request",
+      ttlMs: 500,
+    });
+    let inbound: Uint8Array | undefined;
+    const reply = new TextEncoder().encode("receipt");
+    const handled = await surface.client.receiveAndHandle(({ message }) => {
+      inbound = message.plaintext;
+      expect(new TextDecoder().decode(message.plaintext)).toBe("request");
+      return [
+        {
+          id: "receipt-1",
+          plaintext: reply,
+          purpose: "agent-exchange.receipt",
+          ttlMs: 500,
+        },
+      ];
+    });
+
+    expect(handled.handled).toEqual(["request-1"]);
+    expect(handled).not.toHaveProperty("messages");
+    expect(inbound).toEqual(new Uint8Array(7));
+    expect(reply).toEqual(new Uint8Array(7));
+    expect(surface.acknowledgements).toEqual(["cursor-1"]);
+
+    const response = await surface.client.receive();
+    expect(response.duplicates).toContain("request-1");
+    const application = response.messages.find(
+      (message) => message.kind === "application",
+    );
+    expect(application?.kind).toBe("application");
+    if (application?.kind === "application")
+      expect(new TextDecoder().decode(application.message.plaintext)).toBe(
+        "receipt",
+      );
+  });
+
+  test("does not acknowledge or commit when application handling fails", async () => {
+    const surface = createSurface();
+    await surface.client.createConversation("conversation-1");
+    await surface.client.send({
+      conversationId: "conversation-1",
+      id: "request-1",
+      plaintext: new TextEncoder().encode("request"),
+      purpose: "agent-exchange.request",
+      ttlMs: 500,
+    });
+
+    await expect(
+      surface.client.receiveAndHandle(() => {
+        throw new Error("destination unavailable");
+      }),
+    ).rejects.toThrow("destination unavailable");
+    expect(surface.acknowledgements).toEqual([]);
+
+    await surface.client.loadConversation("conversation-1");
+    await expect(
+      surface.client.receiveAndHandle(() => []),
+    ).resolves.toMatchObject({ handled: ["request-1"] });
+    expect(surface.acknowledgements).toEqual(["cursor-1"]);
+  });
+
   test("fails closed when a sensitive send expects another MLS epoch", async () => {
     const surface = createSurface();
     await surface.client.createConversation("conversation-1");

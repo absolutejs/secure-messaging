@@ -31,6 +31,14 @@ authenticated purpose, sender device ID, security epoch, and plaintext size.
 Rejected decisions discard the mutated in-memory session. Policy code may write
 an audit decision, but it must remain idempotent because delivery is at-least-once.
 
+Use `receiveAndHandle()` when an application request must produce a durable
+encrypted reply before delivery acknowledgement. The handler runs inside the
+conversation transaction boundary and must not recursively call the same
+client. Its external effects must use the authenticated message or exchange ID
+as an idempotency key: a crash before the atomic state/outbox commit deliberately
+causes the request to be delivered again. Reply buffers are wiped and must not be
+reused after the handler returns.
+
 Managed recovery follows RFC 9750 state-loss recovery by rejoining with a fresh
 credential and removing lost leaves. The configured verifier must bind its proof
 to the complete request and use a phishing-resistant approval ceremony. This
