@@ -9,3 +9,15 @@ export class SecureMessagingConfigurationError extends SecureMessagingError {
 export class SecureMessagingProtocolError extends SecureMessagingError {
   override readonly name = "SecureMessagingProtocolError";
 }
+
+export class SecureMessagingDurabilityUncertainError extends SecureMessagingError {
+  override readonly name = "SecureMessagingDurabilityUncertainError";
+  readonly outcome = "unknown" as const;
+
+  constructor(options?: ErrorOptions) {
+    super(
+      "Secure messaging durability acknowledgement was not confirmed. Reload authoritative store state before retrying.",
+      options,
+    );
+  }
+}

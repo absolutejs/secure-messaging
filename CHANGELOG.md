@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0
+
+- Add `SecureMessagingDurabilityUncertainError` for mutations whose durable
+  acknowledgement is lost after the storage operation may already have applied.
+- Require callers to reload authoritative store state before deciding whether a
+  retry is necessary; the error carries no conversation or operation data.
+
 ## 0.5.1
 
 - Add `receiveAndHandle()` so authenticated application work runs before its

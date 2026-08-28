@@ -87,6 +87,12 @@ plaintext. Use the authenticated request ID as the downstream idempotency key:
 an application side effect can be retried if the process exits before the atomic
 commit.
 
+Version `0.6.0` exports `SecureMessagingDurabilityUncertainError` for the
+storage boundary where a mutation may have applied but its durability
+acknowledgement was lost. Callers must resolve the authoritative store, reload
+state, and retry only when the expected revision or effect is absent. The error
+contains no conversation, message, queue, or provider data.
+
 ## Security boundaries
 
 - Delivery sees ciphertext and minimum routing metadata, never conversation keys.
@@ -123,6 +129,9 @@ commit.
   through the durable receipt committed with their new sealed state.
 - A state conflict closes and removes the in-memory session. Reload durable state
   before any further operation.
+- A `SecureMessagingDurabilityUncertainError` means success and failure are both
+  possible. Never retry blindly: resolve the authoritative store and inspect the
+  expected revision, replay receipt, or outbox effect first.
 - Push notifications should carry only an opaque wake-up token.
 
 See [SECURITY.md](./SECURITY.md) before production use.
