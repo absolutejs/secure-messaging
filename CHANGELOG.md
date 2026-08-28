@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1
+
+- Add `resolveSecureMessagingStoreCommit()` to classify an uncertain mutation as
+  exactly applied, safe to retry from the expected revision, or conflicting.
+- Compare the complete stored conversation, including sealed state, before
+  treating the intended revision as applied.
+
 ## 0.6.0
 
 - Add `SecureMessagingDurabilityUncertainError` for mutations whose durable

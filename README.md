@@ -93,6 +93,13 @@ acknowledgement was lost. Callers must resolve the authoritative store, reload
 state, and retry only when the expected revision or effect is absent. The error
 contains no conversation, message, queue, or provider data.
 
+Version `0.6.1` adds `resolveSecureMessagingStoreCommit()`. After selecting the
+authoritative store, pass it the intended conversation and expected revision.
+It returns `applied` only when the complete stored conversation—including sealed
+state—matches, `retry` only when the prior revision is still authoritative, and
+`conflict` for every other state. Associated replay and outbox effects follow
+the store's atomic commit contract.
+
 ## Security boundaries
 
 - Delivery sees ciphertext and minimum routing metadata, never conversation keys.
