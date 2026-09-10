@@ -10,6 +10,7 @@
         "@sinclair/typebox": "^0.34.0",
       },
       "devDependencies": {
+        "@absolutejs/changelog": "^0.1.2",
         "@absolutejs/e2ee-mls": "0.5.0",
         "@absolutejs/secure-transfer": "0.3.0",
         "@types/bun": "^1.3.14",
@@ -19,6 +20,8 @@
     },
   },
   "packages": {
+    "@absolutejs/changelog": ["@absolutejs/changelog@0.1.2", "", { "bin": { "absolute-changelog": "dist/cli.js" } }, "sha512-q6gQwkDr0IVdWHzTOT3AaZvPSn0ucNidbjBnAUZ8CSwS3wrCd02YMXuBC8sd0ptpYvCowLnR/QWIpBrNqbn+YA=="],
+
     "@absolutejs/e2ee": ["@absolutejs/e2ee@0.8.0", "", { "dependencies": { "@absolutejs/manifest": "^0.9.0", "@sinclair/typebox": "^0.34.0" } }, "sha512-POqferRMc0rfqsl2BItK+yFwc5118unC2FJYhDCf/lSt7C83uSzmrIhqGqSO3LXrgigR9KkC/2Pzw3Eur5RXOQ=="],
 
     "@absolutejs/e2ee-mls": ["@absolutejs/e2ee-mls@0.5.0", "", { "dependencies": { "@absolutejs/manifest": "^0.9.0", "@noble/ciphers": "2.2.0", "@noble/hashes": "2.0.1", "@sinclair/typebox": "^0.34.0", "ts-mls": "2.0.0-rc.16" }, "peerDependencies": { "@absolutejs/e2ee": ">=0.8.0 <0.9" } }, "sha512-sajkWuSIzsc6A1H/XG3d6SHkQMRfDRJ9YsDRaQTVyY3H2ihRTrs5TQufeBDvy6R1cR+SsXS+dT/YHMweJAbtcg=="],
